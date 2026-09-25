@@ -50,12 +50,12 @@ jobs:
         if: steps.check_tag.outputs.exists == 'true'
         run: echo "No version bump detected. Nothing to do." && exit 0
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         if: steps.check_tag.outputs.exists == 'false'
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Gradle cache
         if: steps.check_tag.outputs.exists == 'false'
