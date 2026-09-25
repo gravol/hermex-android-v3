@@ -704,18 +704,8 @@ fun ChatScreen(
                         // the last-known reading when the server is quiet
                         // (e.g. reaped agent after app update), and "—" before
                         // any reading exists, instead of hiding the slot.
-                        val ctxUsed = state.contextUsed
-                        val ctxMax = state.contextMax
-                        val knownMax = ctxMax != null && ctxMax > 0
-                        val knownUsed = knownMax && ctxUsed != null
-                        val fraction = if (knownUsed) {
-                            (ctxUsed.toFloat() / ctxMax.toFloat()).coerceIn(0f, 1f)
-                        } else {
-                            0f
-                        }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             // v0.1.88: model chip — shows current model + reasoning
                             // effort; tap opens the picker sheet.
@@ -731,42 +721,12 @@ fun ChatScreen(
                                     color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    // v0.1.105: cap the chip so a long model name
-                                    // can't push the gauge row off the top bar.
                                     modifier = Modifier
-                                        .widthIn(max = 120.dp)
                                         .clip(RoundedCornerShape(6.dp))
                                         .clickable { showModelPicker = true }
                                         .padding(horizontal = 4.dp, vertical = 1.dp),
                                 )
                             }
-                            LinearProgressIndicator(
-                                progress = { fraction },
-                                modifier = Modifier
-                                    .width(64.dp)
-                                    .height(3.dp)
-                                    .clip(RoundedCornerShape(2.dp)),
-                                color = if (knownUsed && fraction > 0.8f) {
-                                    MaterialTheme.colorScheme.error
-                                } else {
-                                    MaterialTheme.colorScheme.primary
-                                },
-                                // v0.1.95: gauge track is a themeable extra surface
-                                trackColor = LocalUiSurfaces.current.gaugeTrack,
-                            )
-                            Text(
-                                text = when {
-                                    knownUsed -> "${formatTokens(ctxUsed)}/${formatTokens(ctxMax)}"
-                                    knownMax -> "—/${formatTokens(ctxMax)}"
-                                    else -> "—/—"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (knownUsed) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                                },
-                            )
                         }
                     }
                 },
