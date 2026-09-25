@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Cleartext (HTTP) is allowed ONLY to the Hermes dashboard server at
+    100.80.204.66:9119 on the Tailscale network. All other traffic
+    requires TLS. This is stricter than android:usesCleartextTraffic="true"
+    (app-wide) which was the previous setting.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">100.80.204.66</domain>
+    </domain-config>
+    <!-- All other domains: cleartextTrafficPermitted defaults to false -->
+</network-security-config>

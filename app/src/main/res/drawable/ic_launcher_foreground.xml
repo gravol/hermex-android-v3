@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple 'H' letter for Hermex -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M35,30h6v18l14,-18h7v30h-6V42L42,60h-7z" />
+</vector>

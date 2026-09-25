@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Hermex" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorBackground">#FF0B141A</item>
+        <item name="android:statusBarColor">#FF0B141A</item>
+        <item name="android:navigationBarColor">#FF0B141A</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

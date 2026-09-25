@@ -1,0 +1,108 @@
+# Auto-tag and release on version bumps to main
+#
+# When a push to main changes versionCode/versionName in
+# app/build.gradle.kts, this workflow builds the signed release APK,
+# creates a matching git tag (v<versionName>), pushes it, and drafts
+# a GitHub Release with the APK attached.
+
+name: Release APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need all tags to check for duplicates
+
+      - name: Extract version from build.gradle.kts
+        id: version
+        run: |
+          VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K\d+' app/build.gradle.kts)
+          echo "versionName=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "versionCode=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          TAG="v${{ steps.version.outputs.versionName }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists — skipping release"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG is new — proceeding with release"
+          fi
+
+      - name: Skip if no new version
+        if: steps.check_tag.outputs.exists == 'true'
+        run: echo "No version bump detected. Nothing to do." && exit 0
+
+      - name: Set up JDK 17
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle cache
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission for gradlew
+        if: steps.check_tag.outputs.exists == 'false'
+        run: chmod +x gradlew
+
+      - name: Build signed release APK
+        if: steps.check_tag.outputs.exists == 'false'
+        run: ./gradlew assembleRelease --no-configuration-cache
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Locate APK
+        if: steps.check_tag.outputs.exists == 'false'
+        id: apk
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "Found APK: $APK"
+
+      - name: Create and push tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag -a "$TAG" -m "Release ${{ steps.version.outputs.versionName }} (code ${{ steps.version.outputs.versionCode }})"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.version.outputs.tag }}
+          name: "v${{ steps.version.outputs.versionName }}"
+          body: |
+            ## HermexAndroid v${{ steps.version.outputs.versionName }}
+
+            **Version code:** ${{ steps.version.outputs.versionCode }}
+
+            Auto-built and tagged on push to main.
+          artifacts: ${{ steps.apk.outputs.path }}
+          token: ${{ secrets.GITHUB_TOKEN }}
