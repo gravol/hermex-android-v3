@@ -978,108 +978,113 @@ fun ChatScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 8.dp),
                     ) {
-                        // Text field — full width, grows left-to-right then down (WebUI-style)
+                        // Composer capsule — text field on top, controls below,
+                        // all inside one capsule (WebUI-style).
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(28.dp),
                             color = Color(0xFF1A1A1A),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
                         ) {
-                            OutlinedTextField(
-                                value = composerText,
-                                onValueChange = { composerText = it },
-                                placeholder = {
-                                    Text(
-                                        "Message Hermes...",
-                                        fontStyle = FontStyle.Italic,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    )
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .focusRequester(focusRequester)
-                                    .onFocusChanged { composerFocused = it.isFocused },
-                                maxLines = 4,
-                                enabled = true,
-                                shape = RoundedCornerShape(28.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color.Transparent,
-                                    unfocusedBorderColor = Color.Transparent,
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                ),
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        // Footer — controls below the text (WebUI-style)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            // Left controls — attach + mic (below the text)
-                            Row(modifier = Modifier.weight(1f)) {
-                                // Attach (paperclip — photo picker)
-                                IconButton(
-                                    onClick = { showAttachSheet = true },
-                                    enabled = !isRecording && !isTranscribing,
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.AttachFile,
-                                        contentDescription = "Attach photo",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                // Voice message
-                                IconButton(
-                                    onClick = {
-                                        if (isRecording) {
-                                            stopRecording()
-                                        } else {
-                                            val granted = ContextCompat.checkSelfPermission(
-                                                context, Manifest.permission.RECORD_AUDIO,
-                                            ) == PackageManager.PERMISSION_GRANTED
-                                            if (granted) startRecording()
-                                            else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        }
+                            Column {
+                                // Text field — full width, grows left-to-right then down
+                                OutlinedTextField(
+                                    value = composerText,
+                                    onValueChange = { composerText = it },
+                                    placeholder = {
+                                        Text(
+                                            "Message Hermes...",
+                                            fontStyle = FontStyle.Italic,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        )
                                     },
-                                    enabled = !isTranscribing && pendingVoiceB64 == null,
-                                ) {
-                                    Icon(
-                                        imageVector = if (isRecording) Icons.Filled.Mic else Icons.Outlined.Mic,
-                                        contentDescription = if (isRecording) "Stop recording" else "Voice message",
-                                        tint = if (isRecording) Color(0xFFFF3B30) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            // Context ring (WebUI-style token gauge) — composer-right
-                            ContextRing(
-                                used = state.contextUsed,
-                                max = state.contextMax,
-                                modifier = Modifier.padding(horizontal = 4.dp),
-                                onClick = { showCtxPanel = true },
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            // Send — accent circle with up arrow (WebUI-style)
-                            val canSend = (composerText.isNotBlank() || pendingImageB64 != null) && !isTranscribing
-                            Box(
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (canSend) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-                                        },
-                                    )
-                                    .clickable(enabled = canSend) { sendComposer() },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Filled.ArrowUpward,
-                                    contentDescription = "Send",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .focusRequester(focusRequester)
+                                        .onFocusChanged { composerFocused = it.isFocused },
+                                    maxLines = 4,
+                                    enabled = true,
+                                    shape = RoundedCornerShape(28.dp),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = Color.Transparent,
+                                        unfocusedBorderColor = Color.Transparent,
+                                        focusedContainerColor = Color.Transparent,
+                                        unfocusedContainerColor = Color.Transparent,
+                                    ),
                                 )
+                                Spacer(Modifier.height(6.dp))
+                                // Controls row — attach, mic, ctx ring, send
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    // Left controls — attach + mic
+                                    Row {
+                                        // Attach (paperclip — photo picker)
+                                        IconButton(
+                                            onClick = { showAttachSheet = true },
+                                            enabled = !isRecording && !isTranscribing,
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.AttachFile,
+                                                contentDescription = "Attach photo",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        // Voice message
+                                        IconButton(
+                                            onClick = {
+                                                if (isRecording) {
+                                                    stopRecording()
+                                                } else {
+                                                    val granted = ContextCompat.checkSelfPermission(
+                                                        context, Manifest.permission.RECORD_AUDIO,
+                                                    ) == PackageManager.PERMISSION_GRANTED
+                                                    if (granted) startRecording()
+                                                    else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                                }
+                                            },
+                                            enabled = !isTranscribing && pendingVoiceB64 == null,
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isRecording) Icons.Filled.Mic else Icons.Outlined.Mic,
+                                                contentDescription = if (isRecording) "Stop recording" else "Voice message",
+                                                tint = if (isRecording) Color(0xFFFF3B30) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    // Context ring (WebUI-style token gauge)
+                                    ContextRing(
+                                        used = state.contextUsed,
+                                        max = state.contextMax,
+                                        modifier = Modifier.padding(horizontal = 4.dp),
+                                        onClick = { showCtxPanel = true },
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    // Send — accent circle with up arrow (WebUI-style)
+                                    val canSend = (composerText.isNotBlank() || pendingImageB64 != null) && !isTranscribing
+                                    Box(
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (canSend) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                                },
+                                            )
+                                            .clickable(enabled = canSend) { sendComposer() },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.ArrowUpward,
+                                            contentDescription = "Send",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
