@@ -9,6 +9,19 @@
 
 ---
 
+## Hermex 3 (com.hermex.v3) — separate app, WebUI-style composer
+
+A separate app package (`com.hermex.v3`) built from the same base as the daily-driver app, with the composer restyled to match the WebUI. Not part of the daily-driver app.
+
+- **Repo:** `git@github.com:gravol/hermex-android-v3.git`
+- **Working directory:** `/home/jeff/HermexAndroid-webui`
+- **Release process:** `git tag v0.1.X` → `git push origin master` → `git push origin v0.1.X` → `gh release create v0.1.X app/build/outputs/apk/release/app-release.apk --title "v0.1.X" --notes "..." -R gravol/hermex-android-v3`
+- **v0.1.1** — WebUI-style composer: text field on top (full width, grows left-to-right then wraps down), controls below (attach, mic, ctx ring, send). (`ChatScreen.kt`.)
+- **v0.1.2** — Removed the ctx-window progress bar and token-count text (`used/max`) from the top bar next to the model chip. Model chip stays. (`ChatScreen.kt`.)
+- **v0.1.3** — Composer: text field + controls now inside ONE capsule instead of two separate rows. Controls sit below the text field, all inside the same rounded surface. (`ChatScreen.kt`.)
+
+---
+
 ## [0.1.172] — 2026-09-22 — session-list reload-loop fix (released to Obtainium)
 
 **Status:** FIXED, committed `d8d1f65`, built + released to Obtainium.

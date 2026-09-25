@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] — Hermex 3 (com.hermex.v3) — Composer wrapped in single capsule
+- **Composer layout:** text field and controls (attach, mic, ctx ring, send) now live inside ONE capsule instead of two separate rows. Controls sit below the text field, all inside the same rounded surface. (`ChatScreen.kt`.)
+
+## [0.1.2] — Hermex 3 (com.hermex.v3) — Removed ctx gauge + token numbers from top bar
+- **Top bar:** removed the context-window progress bar and token-count text (`used/max`) that appeared next to the model chip. The model chip stays; the gauge row is gone. (`ChatScreen.kt`.)
+
+## [0.1.1] — Hermex 3 (com.hermex.v3) — WebUI-style composer layout
+- **Composer:** text field on top (full width, grows left-to-right then wraps down), controls below (attach, mic, ctx ring, send) — matching the WebUI composer structure. (`ChatScreen.kt`.)
+
+---
+
 ## [0.1.170] — 2026-09-21 — Approvals/clarify now work (client never advertised server→client requests)
 
 ### Fixed
