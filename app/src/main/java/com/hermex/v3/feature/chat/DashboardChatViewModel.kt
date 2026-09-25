@@ -1603,12 +1603,17 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 // switch) reflects here without a full resume.
                 val infoModel = n.info?.get("model")?.jsonPrimitive?.contentOrNull
                 val infoReasoning = n.info?.get("reasoning_effort")?.jsonPrimitive?.contentOrNull
+                // session.info carries the authoritative yolo flag — the button
+                // reads this instead of a separate REST call, and updates live
+                // whenever yolo is toggled from any surface.
+                val infoYolo = n.info?.get("yolo")?.jsonPrimitive?.contentOrNull
                 uiState = uiState.copy(
                     contextUsed = context.first ?: uiState.contextUsed,
                     contextMax = context.second ?: uiState.contextMax,
                     currentModel = infoModel ?: uiState.currentModel,
                     currentReasoning = infoReasoning?.takeIf { it.isNotBlank() }
                         ?: uiState.currentReasoning,
+                    yoloEnabled = infoYolo?.toBooleanStrictOrNull() ?: uiState.yoloEnabled,
                 )
             }
 
@@ -1861,86 +1866,32 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     // current state from the server, and toggles on button press.
 
     /**
-     * Load the current YOLO state from the server (for the composer button).
+     * Load the current YOLO state for the composer button.
      *
-     * Optimistic: the button flips the instant it's pressed, so a slow or
-     * transiently-unreachable server never leaves the user staring at a dead
-     * pill. We optimistically render the desired state, then reconcile with the
-     * server — reverting only on a hard failure so the UI always reflects reality.
+     * The authoritative yolo flag lives in session.info (server-side, updated
+     * live by any surface), so the button reads it there — no separate REST
+     * call needed. This stub exists to keep the contract; the button's initial
+     * and live state is populated in the SessionInfo handler.
      */
     override fun loadYoloStatus(desiredEnabled: Boolean) {
-        if (sessionId.isEmpty()) return
-        viewModelScope.launch {
-            try {
-                when (val r = DashboardApiClient.yoloStatus(sessionId)) {
-                    is NetworkResult.Success -> {
-                        uiState = uiState.copy(yoloEnabled = r.data.yoloEnabled ?: desiredEnabled)
-                    }
-                    is NetworkResult.HttpError -> {
-                        DebugLog.log("YOLO", "DashboardChat", "status fetch failed: HTTP ${r.code}")
-                        Toast.makeText(getApplication(), "Couldn't read YOLO state", Toast.LENGTH_SHORT).show()
-                    }
-                    is NetworkResult.Error -> {
-                        DebugLog.log("YOLO", "DashboardChat", "status fetch failed: ${r.exception.message}")
-                        Toast.makeText(getApplication(), "Couldn't read YOLO state", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (e: Exception) {
-                DebugLog.log("YOLO", "DashboardChat", "status exception: ${e.message}")
-            }
-        }
+        // no-op — yoloEnabled is populated from session.info (see
+        // RpcNotification.SessionInfo handler)
     }
 
     /**
      * Toggle YOLO mode on/off for this session.
      *
-     * Optimistic: the button flips immediately so the user always gets feedback,
-     * then we sync with the server. YOLO is session-scoped and not persisted.
-     * The server's enable path can return non-2xx (e.g. 409 while a gateway
-     * approval relay is in flight), so we revert on any failure and tell the user.
+     * Optimistic: the button flips immediately so the user always gets feedback.
+     * YOLO is session-scoped and not persisted. The toggle is routed through the
+     * existing `/yolo` slash command (gateway slash infra) — no new dashboard
+     * route needed for the write. The slash output ("YOLO mode enabled/disabled")
+     * renders in chat as confirmation, and the button re-reads state on next open.
      */
     override fun setYolo(enabled: Boolean) {
         if (sessionId.isEmpty()) return
-        val previous = uiState.yoloEnabled
         // Flip immediately — the pill must respond the instant it's tapped.
         uiState = uiState.copy(yoloEnabled = enabled)
-        viewModelScope.launch {
-            try {
-                when (val r = DashboardApiClient.yoloToggle(sessionId, enabled)) {
-                    is NetworkResult.Success -> {
-                        val settled = r.data.yoloEnabled ?: enabled
-                        uiState = uiState.copy(yoloEnabled = settled)
-                        DebugLog.log("YOLO", "DashboardChat", "toggled → enabled=$settled")
-                    }
-                    is NetworkResult.HttpError -> {
-                        uiState = uiState.copy(yoloEnabled = previous)
-                        DebugLog.log("YOLO", "DashboardChat", "toggle rejected: HTTP ${r.code}")
-                        Toast.makeText(
-                            getApplication(),
-                            "YOLO rejected (HTTP ${r.code})",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    }
-                    is NetworkResult.Error -> {
-                        uiState = uiState.copy(yoloEnabled = previous)
-                        DebugLog.log("YOLO", "DashboardChat", "toggle failed: ${r.exception.message}")
-                        Toast.makeText(
-                            getApplication(),
-                            "Couldn't toggle YOLO",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    }
-                }
-            } catch (e: Exception) {
-                uiState = uiState.copy(yoloEnabled = previous)
-                DebugLog.log("YOLO", "DashboardChat", "toggle exception: ${e.message}")
-                Toast.makeText(
-                    getApplication(),
-                    "Couldn't toggle YOLO",
-                    Toast.LENGTH_SHORT,
-                ).show()
-            }
-        }
+        sendMessage("/yolo")
     }
 
     /** Whether the chat screen is currently visible (background-turn tracking). */

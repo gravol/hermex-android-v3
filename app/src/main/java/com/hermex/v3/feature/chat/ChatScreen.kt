@@ -1013,7 +1013,7 @@ fun ChatScreen(
                                         unfocusedContainerColor = Color.Transparent,
                                     ),
                                 )
-                                Spacer(Modifier.height(6.dp))
+                                Spacer(Modifier.height(2.dp))
                                 // Controls row — attach, mic, ctx ring, send
                                 Row(
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
