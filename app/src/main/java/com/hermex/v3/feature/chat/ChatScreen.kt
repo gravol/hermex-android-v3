@@ -1011,23 +1011,53 @@ fun ChatScreen(
                             onAnswer = { answer -> viewModel.respondToClarify(answer) },
                         )
                     }
-                    Row(
+                    // Composer — WebUI-style: text field on top (full width),
+                    // footer controls (attach, mic, ctx ring, send) below it.
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // WebUI-style composer capsule (v0.1.124)
+                        // Text field — full width, grows left-to-right then down (WebUI-style)
                         Surface(
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(28.dp),
                             color = Color(0xFF1A1A1A),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
+                            OutlinedTextField(
+                                value = composerText,
+                                onValueChange = { composerText = it },
+                                placeholder = {
+                                    Text(
+                                        "Message Hermes...",
+                                        fontStyle = FontStyle.Italic,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(focusRequester)
+                                    .onFocusChanged { composerFocused = it.isFocused },
+                                maxLines = 4,
+                                enabled = true,
+                                shape = RoundedCornerShape(28.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color.Transparent,
+                                    unfocusedBorderColor = Color.Transparent,
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                ),
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        // Footer — controls below the text (WebUI-style)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // Left controls — attach + mic (below the text)
+                            Row(modifier = Modifier.weight(1f)) {
                                 // Attach (paperclip — photo picker)
                                 IconButton(
                                     onClick = { showAttachSheet = true },
@@ -1060,62 +1090,37 @@ fun ChatScreen(
                                         tint = if (isRecording) Color(0xFFFF3B30) else MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                // Text field — transparent inside the capsule
-                                OutlinedTextField(
-                                    value = composerText,
-                                    onValueChange = { composerText = it },
-                                    placeholder = {
-                                        Text(
-                                            "Message Hermes...",
-                                            fontStyle = FontStyle.Italic,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                        )
-                                    },
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .focusRequester(focusRequester)
-                                        .onFocusChanged { composerFocused = it.isFocused },
-                                    maxLines = 4,
-                                    enabled = true,
-                                    shape = RoundedCornerShape(28.dp),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = Color.Transparent,
-                                        unfocusedBorderColor = Color.Transparent,
-                                        focusedContainerColor = Color.Transparent,
-                                        unfocusedContainerColor = Color.Transparent,
-                                    ),
-                                )
-                                // Context ring (WebUI-style token gauge)
-                                ContextRing(
-                                    used = state.contextUsed,
-                                    max = state.contextMax,
-                                    modifier = Modifier.padding(horizontal = 4.dp),
-                                    onClick = { showCtxPanel = true },
+                            }
+                            // Context ring (WebUI-style token gauge) — composer-right
+                            ContextRing(
+                                used = state.contextUsed,
+                                max = state.contextMax,
+                                modifier = Modifier.padding(horizontal = 4.dp),
+                                onClick = { showCtxPanel = true },
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            // Send — accent circle with up arrow (WebUI-style)
+                            val canSend = (composerText.isNotBlank() || pendingImageB64 != null) && !isTranscribing
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (canSend) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                        },
+                                    )
+                                    .clickable(enabled = canSend) { sendComposer() },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Filled.ArrowUpward,
+                                    contentDescription = "Send",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
                                 )
                             }
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        // Send — accent circle with up arrow (WebUI-style)
-                        val canSend = (composerText.isNotBlank() || pendingImageB64 != null) && !isTranscribing
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (canSend) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-                                    },
-                                )
-                                .clickable(enabled = canSend) { sendComposer() },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Filled.ArrowUpward,
-                                contentDescription = "Send",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
                         }
                     }
                 }
