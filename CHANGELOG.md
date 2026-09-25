@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] — Hermex 3 (com.hermex.v3) — YOLO mode button in composer
+- **YOLO button:** amber pill (⚡ "YOLO") beside the ctx ring in the composer. Toggles session-scoped approval-skip — when on, the app auto-approves tool calls for the current session. Mirrors the WebUI's `.yolo-pill` (amber when active, outlined when off). REST via new `DashboardApiClient.yoloStatus()`/`yoloToggle()` (`GET`/`POST /api/session/yolo`), state in `ChatUiState.yoloEnabled`, wired through `ChatViewModelContract` open methods so the legacy SSE ViewModel keeps compiling. (`DashboardApiClient.kt`, `DashboardChatViewModel.kt`, `ChatScreen.kt`, `UiModels.kt`, `ChatViewModelContract.kt`.)
+
 ## [0.1.3] — Hermex 3 (com.hermex.v3) — Composer wrapped in single capsule
 - **Composer layout:** text field and controls (attach, mic, ctx ring, send) now live inside ONE capsule instead of two separate rows. Controls sit below the text field, all inside the same rounded surface. (`ChatScreen.kt`.)
 
