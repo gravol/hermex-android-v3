@@ -150,6 +150,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             "init() — sessionId ASSIGNED: old=$oldSid new=$sessionId (DB key) title=$sessionTitle")
         connectWsAndStart()
         loadReasoningFromConfig()
+        loadYoloStatus()
     }
 
     override fun loadMessages() {
@@ -1851,6 +1852,46 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     else -> {}
                 }
             } catch (_: Exception) {}
+        }
+    }
+
+    // ── YOLO mode (v0.1.4) — session-scoped approval-skip toggle ──
+    // Mirrors the WebUI's cmdYolo: session-scoped, not persisted. Loads the
+    // current state from the server, and toggles on button press.
+
+    /** Load the current YOLO state from the server (for the composer button). */
+    override fun loadYoloStatus() {
+        if (sessionId.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                when (val r = DashboardApiClient.yoloStatus(sessionId)) {
+                    is NetworkResult.Success -> {
+                        uiState = uiState.copy(yoloEnabled = r.data.yoloEnabled ?: false)
+                    }
+                    else -> {}
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Toggle YOLO mode on/off for this session. */
+    override fun setYolo(enabled: Boolean) {
+        if (sessionId.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                when (val r = DashboardApiClient.yoloToggle(sessionId, enabled)) {
+                    is NetworkResult.Success -> {
+                        val settled = r.data.yoloEnabled ?: enabled
+                        uiState = uiState.copy(yoloEnabled = settled)
+                        DebugLog.log("YOLO", "DashboardChat", "toggled → enabled=$settled")
+                    }
+                    else -> {
+                        DebugLog.log("YOLO", "DashboardChat", "toggle failed")
+                    }
+                }
+            } catch (e: Exception) {
+                DebugLog.log("YOLO", "DashboardChat", "toggle exception: ${e.message}")
+            }
         }
     }
 

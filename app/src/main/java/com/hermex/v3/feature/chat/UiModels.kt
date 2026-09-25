@@ -67,6 +67,9 @@ data class ChatUiState(
     // v0.1.88: current model + reasoning effort (from resume info / config).
     val currentModel: String? = null,
     val currentReasoning: String? = null,
+    // v0.1.4: YOLO mode (skip approvals this session). Toggled from the
+    // composer YOLO button. Not persisted across sessions.
+    val yoloEnabled: Boolean = false,
     // Agent task list (todo tool state, from tool.complete events / history replay).
     // Non-empty = the Tasks card shows above the message list.
     val todos: List<UiTodo> = emptyList(),

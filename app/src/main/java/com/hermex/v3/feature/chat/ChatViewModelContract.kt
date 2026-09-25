@@ -50,4 +50,10 @@ abstract class ChatViewModelContract(application: Application) : AndroidViewMode
 
     /** v0.1.89: mid-session switch via /model + /reasoning slash commands. */
     open fun applyModelToSession(model: String, reasoning: String, thinkingOn: Boolean = true) {}
+
+    // ── YOLO mode (v0.1.4) — session-scoped approval-skip toggle ──
+    /** Load the current YOLO state from the server (for the composer button). */
+    open fun loadYoloStatus() {}
+    /** Toggle YOLO mode on/off for this session. */
+    open fun setYolo(enabled: Boolean) {}
 }

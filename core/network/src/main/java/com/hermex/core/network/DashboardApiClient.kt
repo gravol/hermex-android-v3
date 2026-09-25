@@ -561,6 +561,54 @@ object DashboardApiClient {
             }
         }
 
+    // ── YOLO mode (v0.1.4) — session-scoped approval-skip toggle ──
+    // Mirrors the WebUI's cmdYolo (commands.js):
+    //   GET  /api/session/yolo?session_id={sid}  → {yolo_enabled: bool}
+    //   POST /api/session/yolo  {session_id, enabled} → {yolo_enabled: bool}
+
+    @Serializable
+    data class YoloStatus(
+        @SerialName("yolo_enabled") val yoloEnabled: Boolean? = null,
+    )
+
+    /** Fetch the current YOLO state for a session. */
+    suspend fun yoloStatus(sessionId: String): NetworkResult<YoloStatus> =
+        withContext(Dispatchers.IO) {
+            try {
+                val encoded = java.net.URLEncoder.encode(sessionId, "UTF-8")
+                val response = httpClient.newCall(
+                    Request.Builder()
+                        .url("$restUrl/api/session/yolo?session_id=$encoded")
+                        .get()
+                        .build()
+                ).execute()
+                response.handleResult(json, YoloStatus.serializer())
+            } catch (e: Exception) {
+                NetworkResult.Error(e)
+            }
+        }
+
+    /** Toggle YOLO mode on/off for a session. */
+    suspend fun yoloToggle(sessionId: String, enabled: Boolean): NetworkResult<YoloStatus> =
+        withContext(Dispatchers.IO) {
+            try {
+                val body = buildJsonObject {
+                    put("session_id", sessionId)
+                    put("enabled", enabled)
+                }
+                val bodyStr = json.encodeToString(JsonObject.serializer(), body)
+                val response = httpClient.newCall(
+                    Request.Builder()
+                        .url("$restUrl/api/session/yolo")
+                        .post(bodyStr.toRequestBody(mediaTypeJson))
+                        .build()
+                ).execute()
+                response.handleResult(json, YoloStatus.serializer())
+            } catch (e: Exception) {
+                NetworkResult.Error(e)
+            }
+        }
+
     // ── Authenticator: auto-relogin on 401 ──
 
     private class DashboardAuthenticator : Authenticator {

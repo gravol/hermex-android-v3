@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.outlined.Handyman
@@ -1060,6 +1061,12 @@ fun ChatScreen(
                                         max = state.contextMax,
                                         modifier = Modifier.padding(horizontal = 4.dp),
                                         onClick = { showCtxPanel = true },
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    // YOLO mode pill — skip approvals this session (v0.1.4)
+                                    YoloButton(
+                                        enabled = state.yoloEnabled,
+                                        onClick = { viewModel.setYolo(!state.yoloEnabled) },
                                     )
                                     Spacer(Modifier.width(6.dp))
                                     // Send — accent circle with up arrow (WebUI-style)
@@ -3403,6 +3410,47 @@ private fun ContextRing(
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+// ── YOLO BUTTON (WebUI-style pill, v0.1.4) ──
+// Session-scoped approval-skip toggle. Mirrors the WebUI's .yolo-pill: amber
+// when active, outlined when off. Toggles via viewModel.setYolo().
+@Composable
+private fun YoloButton(
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val activeColor = Color(0xFFF59E0B)  // amber-500, matches WebUI yolo-pill
+    val activeBg = activeColor.copy(alpha = 0.15f)
+    val activeBorder = activeColor.copy(alpha = 0.35f)
+    Surface(
+        modifier = Modifier
+            .height(30.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(999.dp),
+        color = if (enabled) activeBg else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        border = BorderStroke(1.dp, if (enabled) activeBorder else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Bolt,
+                contentDescription = null,
+                tint = if (enabled) activeColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = "YOLO",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.04.sp,
+                color = if (enabled) activeColor else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
