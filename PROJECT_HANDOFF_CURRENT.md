@@ -20,6 +20,7 @@ A separate app package (`com.hermex.v3`) built from the same base as the daily-d
 - **v0.1.2** — Removed the ctx-window progress bar and token-count text (`used/max`) from the top bar next to the model chip. Model chip stays. (`ChatScreen.kt`.)
 - **v0.1.3** — Composer: text field + controls now inside ONE capsule instead of two separate rows. Controls sit below the text field, all inside the same rounded surface. (`ChatScreen.kt`.)
 - **v0.1.4** — YOLO mode button in the composer: amber pill (⚡ "YOLO") beside the ctx ring, toggles session-scoped approval-skip. REST via new `DashboardApiClient.yoloStatus()`/`yoloToggle()` (`GET`/`POST /api/session/yolo`), state in `ChatUiState.yoloEnabled`, wired through `ChatViewModelContract` open methods. Mirrors the WebUI's `.yolo-pill`. (`DashboardApiClient.kt`, `DashboardChatViewModel.kt`, `ChatScreen.kt`, `UiModels.kt`.)
+- **v0.1.5** — YOLO button "does nothing" fixed. The button was wired correctly but gave zero feedback: `handleResult()` turns any non-2xx server response into `HttpError`, and the ViewModel only updated `yoloEnabled` on `NetworkResult.Success` — so a server-rejected toggle (e.g. 409 during a gateway approval relay) silently did nothing, pill stayed grey, user got no signal. **Fix:** optimistic toggle — the pill flips the instant it's tapped, then syncs with the server and reverts on failure with a Toast (`YOLO rejected (HTTP …)` / `Couldn't toggle YOLO`); same treatment for the initial status fetch. (`DashboardChatViewModel.kt`, `ChatViewModelContract.kt`, `DebugLog.kt`.)
 
 ---
 
