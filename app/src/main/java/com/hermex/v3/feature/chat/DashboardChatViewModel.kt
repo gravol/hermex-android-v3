@@ -2,6 +2,7 @@ package com.hermex.v3.feature.chat
 
 import android.app.Application
 import android.util.Log
+import android.widget.Toast
 import com.hermex.v3.AppState
 import kotlin.runCatching
 import com.hermex.v3.feature.settings.SettingsRepository
@@ -150,7 +151,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             "init() — sessionId ASSIGNED: old=$oldSid new=$sessionId (DB key) title=$sessionTitle")
         connectWsAndStart()
         loadReasoningFromConfig()
-        loadYoloStatus()
+        loadYoloStatus(false)
     }
 
     override fun loadMessages() {
@@ -1859,24 +1860,50 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     // Mirrors the WebUI's cmdYolo: session-scoped, not persisted. Loads the
     // current state from the server, and toggles on button press.
 
-    /** Load the current YOLO state from the server (for the composer button). */
-    override fun loadYoloStatus() {
+    /**
+     * Load the current YOLO state from the server (for the composer button).
+     *
+     * Optimistic: the button flips the instant it's pressed, so a slow or
+     * transiently-unreachable server never leaves the user staring at a dead
+     * pill. We optimistically render the desired state, then reconcile with the
+     * server — reverting only on a hard failure so the UI always reflects reality.
+     */
+    override fun loadYoloStatus(desiredEnabled: Boolean) {
         if (sessionId.isEmpty()) return
         viewModelScope.launch {
             try {
                 when (val r = DashboardApiClient.yoloStatus(sessionId)) {
                     is NetworkResult.Success -> {
-                        uiState = uiState.copy(yoloEnabled = r.data.yoloEnabled ?: false)
+                        uiState = uiState.copy(yoloEnabled = r.data.yoloEnabled ?: desiredEnabled)
                     }
-                    else -> {}
+                    is NetworkResult.HttpError -> {
+                        DebugLog.log("YOLO", "DashboardChat", "status fetch failed: HTTP ${r.code}")
+                        Toast.makeText(getApplication(), "Couldn't read YOLO state", Toast.LENGTH_SHORT).show()
+                    }
+                    is NetworkResult.Error -> {
+                        DebugLog.log("YOLO", "DashboardChat", "status fetch failed: ${r.exception.message}")
+                        Toast.makeText(getApplication(), "Couldn't read YOLO state", Toast.LENGTH_SHORT).show()
+                    }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                DebugLog.log("YOLO", "DashboardChat", "status exception: ${e.message}")
+            }
         }
     }
 
-    /** Toggle YOLO mode on/off for this session. */
+    /**
+     * Toggle YOLO mode on/off for this session.
+     *
+     * Optimistic: the button flips immediately so the user always gets feedback,
+     * then we sync with the server. YOLO is session-scoped and not persisted.
+     * The server's enable path can return non-2xx (e.g. 409 while a gateway
+     * approval relay is in flight), so we revert on any failure and tell the user.
+     */
     override fun setYolo(enabled: Boolean) {
         if (sessionId.isEmpty()) return
+        val previous = uiState.yoloEnabled
+        // Flip immediately — the pill must respond the instant it's tapped.
+        uiState = uiState.copy(yoloEnabled = enabled)
         viewModelScope.launch {
             try {
                 when (val r = DashboardApiClient.yoloToggle(sessionId, enabled)) {
@@ -1885,12 +1912,33 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                         uiState = uiState.copy(yoloEnabled = settled)
                         DebugLog.log("YOLO", "DashboardChat", "toggled → enabled=$settled")
                     }
-                    else -> {
-                        DebugLog.log("YOLO", "DashboardChat", "toggle failed")
+                    is NetworkResult.HttpError -> {
+                        uiState = uiState.copy(yoloEnabled = previous)
+                        DebugLog.log("YOLO", "DashboardChat", "toggle rejected: HTTP ${r.code}")
+                        Toast.makeText(
+                            getApplication(),
+                            "YOLO rejected (HTTP ${r.code})",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    is NetworkResult.Error -> {
+                        uiState = uiState.copy(yoloEnabled = previous)
+                        DebugLog.log("YOLO", "DashboardChat", "toggle failed: ${r.exception.message}")
+                        Toast.makeText(
+                            getApplication(),
+                            "Couldn't toggle YOLO",
+                            Toast.LENGTH_SHORT,
+                        ).show()
                     }
                 }
             } catch (e: Exception) {
+                uiState = uiState.copy(yoloEnabled = previous)
                 DebugLog.log("YOLO", "DashboardChat", "toggle exception: ${e.message}")
+                Toast.makeText(
+                    getApplication(),
+                    "Couldn't toggle YOLO",
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
         }
     }

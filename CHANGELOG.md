@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.5] — Hermex 3 (com.hermex.v3) — YOLO button now responds optimistically
+- **YOLO button "does nothing" fixed.** The ⚡ YOLO pill was wired correctly (button → `viewModel.setYolo()` → `DashboardApiClient.yoloToggle()` → `POST /api/session/yolo`), but it never gave feedback: `handleResult()` turns any non-2xx server response into `HttpError`, and the ViewModel only updated `yoloEnabled` on `NetworkResult.Success`. The server's enable path can return non-2xx (e.g. 409 while a gateway approval relay is in flight), so a tap that the server rejected silently did nothing — the pill stayed grey and the user got no signal. **Fix:** the toggle is now optimistic — the pill flips the instant it's tapped, then syncs with the server and reverts on any failure, with a Toast explaining the outcome (`YOLO rejected (HTTP …)` / `Couldn't toggle YOLO`). Same applies to the initial status fetch. (`DashboardChatViewModel.kt`, `ChatViewModelContract.kt`.)
+
 ## [0.1.4] — Hermex 3 (com.hermex.v3) — YOLO mode button in composer
 - **YOLO button:** amber pill (⚡ "YOLO") beside the ctx ring in the composer. Toggles session-scoped approval-skip — when on, the app auto-approves tool calls for the current session. Mirrors the WebUI's `.yolo-pill` (amber when active, outlined when off). REST via new `DashboardApiClient.yoloStatus()`/`yoloToggle()` (`GET`/`POST /api/session/yolo`), state in `ChatUiState.yoloEnabled`, wired through `ChatViewModelContract` open methods so the legacy SSE ViewModel keeps compiling. (`DashboardApiClient.kt`, `DashboardChatViewModel.kt`, `ChatScreen.kt`, `UiModels.kt`, `ChatViewModelContract.kt`.)
 

@@ -53,7 +53,7 @@ abstract class ChatViewModelContract(application: Application) : AndroidViewMode
 
     // ── YOLO mode (v0.1.4) — session-scoped approval-skip toggle ──
     /** Load the current YOLO state from the server (for the composer button). */
-    open fun loadYoloStatus() {}
+    open fun loadYoloStatus(desiredEnabled: Boolean = false) {}
     /** Toggle YOLO mode on/off for this session. */
     open fun setYolo(enabled: Boolean) {}
 }
