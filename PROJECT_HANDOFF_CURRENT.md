@@ -19,6 +19,7 @@ A separate app package (`com.hermex.v3`) built from the same base as the daily-d
 - **v0.1.1** — WebUI-style composer: text field on top (full width, grows left-to-right then wraps down), controls below (attach, mic, ctx ring, send). (`ChatScreen.kt`.)
 - **v0.1.2** — Removed the ctx-window progress bar and token-count text (`used/max`) from the top bar next to the model chip. Model chip stays. (`ChatScreen.kt`.)
 - **v0.1.3** — Composer: text field + controls now inside ONE capsule instead of two separate rows. Controls sit below the text field, all inside the same rounded surface. (`ChatScreen.kt`.)
+- **v0.1.4** — YOLO mode button in the composer: amber pill (⚡ "YOLO") beside the ctx ring, toggles session-scoped approval-skip. REST via new `DashboardApiClient.yoloStatus()`/`yoloToggle()` (`GET`/`POST /api/session/yolo`), state in `ChatUiState.yoloEnabled`, wired through `ChatViewModelContract` open methods. Mirrors the WebUI's `.yolo-pill`. (`DashboardApiClient.kt`, `DashboardChatViewModel.kt`, `ChatScreen.kt`, `UiModels.kt`.)
 
 ---
 
