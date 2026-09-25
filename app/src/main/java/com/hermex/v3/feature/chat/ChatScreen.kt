@@ -1055,6 +1055,15 @@ fun ChatScreen(
                                         }
                                     }
                                     Spacer(Modifier.weight(1f))
+                                    // Context token gauge — compact "used / max" readout left of the ring
+                                    Text(
+                                        text = if (state.contextMax != null && state.contextMax > 0 && state.contextUsed != null)
+                                            "${formatTokens(state.contextUsed)} / ${formatTokens(state.contextMax)}"
+                                        else "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        modifier = Modifier.padding(end = 2.dp),
+                                    )
                                     // Context ring (WebUI-style token gauge)
                                     ContextRing(
                                         used = state.contextUsed,
@@ -3586,8 +3595,8 @@ private fun ContextDetailsPanel(
                     }
                     Spacer(Modifier.height(20.dp))
                 }
-                // Compress affordance (WebUI shows it when context is high)
-                if (fraction >= 0.50f || hasUsageData) {
+                // Compress affordance — always visible so it's reachable even at low usage
+                if (true) {
                     Button(
                         onClick = onCompress,
                         enabled = !isStreaming,
