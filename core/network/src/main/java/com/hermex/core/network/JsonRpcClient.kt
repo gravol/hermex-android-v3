@@ -513,6 +513,9 @@ class JsonRpcClient(
         val preview: String? = null,
         @SerialName("input_tokens") val input_tokens: Long? = null,
         @SerialName("output_tokens") val output_tokens: Long? = null,
+        // Last-activity clock (epoch seconds) — the Insights DAY/WEEK/MONTH bucket clock.
+        // Null on pre-feature rows; SessionSummary.lastActivityAt falls back to startedAt.
+        @SerialName("last_activity_at") val last_activity_at: Double? = null,
         val is_active: Boolean? = null,
     )
 

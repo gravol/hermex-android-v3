@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.8] — Hermex 3 (com.hermex.v3) — Insights DAY bucket: real last-activity clock
+- **Insights Daily view was always empty** (Week/Month showed tokens). Cause: `session.list` rows carried
+  only `started_at` — `SessionSummary.lastActivityAt` existed and the panel's bucket chain
+  (`lastActivityAt ?: lastActive ?: endedAt ?: startedAt`) was ready for it, but `SessionInfo` never parsed
+  the server's `last_activity_at` and `toSessionSummary()` never mapped it, so every session bucketed by
+  start time. `started_at` anchors near midnight UTC and the panel compares local dates → an evening
+  schedule reads "today = 0 sessions" permanently. Fix: parse `@SerialName("last_activity_at")` in
+  `SessionInfo` and map `lastActivityAt = last_activity_at`. Pre-feature rows return null → same
+  started_at fallback as before, no regression. Requires the gateway to emit the field (companion
+  hermes-agent patch `fix(session.list): surface last_activity_at` + gateway restart).
+  (`JsonRpcClient.kt`, `SessionsViewModel.kt`.)
+
 ## [0.1.7] — Hermex 3 (com.hermex.v3) — Context token readout left of ring; compress button always visible
 - **Context token readout:** compact `used / max` token gauge (e.g. `130k / 262k`) now renders immediately left of the ctx ring, using `formatTokens()` for human-readable values. Ring still clickable → ctx details panel. (`ChatScreen.kt` composer Row.)
 - **Compress button always reachable:** the ctx details panel now always shows the Compress button (previously gated behind `fraction >= 0.50f || hasUsageData`), so `/compress` is reachable even at low usage.

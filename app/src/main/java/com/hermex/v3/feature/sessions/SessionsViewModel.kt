@@ -282,6 +282,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             preview = preview,
             inputTokens = input_tokens ?: -1,
             outputTokens = output_tokens ?: -1,
+            lastActivityAt = last_activity_at,
         )
     }
 
