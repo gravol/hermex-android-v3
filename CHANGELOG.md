@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.81] — Hermex 3 (com.hermex.v3) — streaming UI batching: no more phone slowdown on long runs
+- **Long agent runs (heavy thinking/streaming) crawled the chat and lagged the whole phone** until the
+  app was force-killed. Cause: every token/thinking delta committed `uiState` individually (~30/sec) —
+  full message-list copy + full Markdown re-parse of the ever-growing streaming bubble + scroll pass
+  per delta (quadratic in message length). Fix: buffer deltas, commit in ~110ms batches (cap 4096 chars);
+  non-delta events flush the buffer first so wire order is preserved; stale-stream watchdog now re-arms
+  per flush (~9/sec) instead of per delta. Visually identical stream, ~3x fewer full-tree commits.
+
 ## [0.1.8] — Hermex 3 (com.hermex.v3) — Insights DAY bucket: real last-activity clock
 - **Insights Daily view was always empty** (Week/Month showed tokens). Cause: `session.list` rows carried
   only `started_at` — `SessionSummary.lastActivityAt` existed and the panel's bucket chain

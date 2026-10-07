@@ -103,6 +103,23 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     // must NOT nuke the stream (see armStaleStreamGuard). Set true on the first
     // streaming event; reset in ensureStreamingPlaceholder.
     private var streamingContentSeen = false
+
+    // ── v0.1.81: streaming-delta batching ──
+    // During long thinking/answer runs the server emits coalesced deltas ~30x/sec.
+    // Committing uiState PER DELTA re-renders the streaming bubble 30x/sec — full
+    // message-list copy + full Markdown re-parse of an ever-growing string + scroll
+    // pass — which saturates the main thread (quadratic in message length), heats
+    // the phone, and lags every touch until the app is killed. Buffer deltas and
+    // commit on a fixed ~110ms heartbeat: ~3x fewer full-tree commits, visually
+    // identical (text lands in slightly bigger chunks). Non-delta events flush the
+    // buffer first so wire order is preserved. All of this runs on the Main
+    // dispatcher (the notification collector), so no locking is needed.
+    private val pendingDeltaBuf = StringBuilder()
+    private val pendingThinkBuf = StringBuilder()
+    private var pendingTokPerSec: Float? = null
+    private var deltaFlushJob: Job? = null
+    private val DELTA_FLUSH_MS = 110L
+    private val DELTA_FLUSH_CHAR_CAP = 4096
     // v0.1.137: was 45s (far too slow — a short turn freezes until this fires).
     // Now ~10s, and it clears immediately if a completion signal was already
     // seen for the still-streaming message (turnDoneSeen). Primary recovery is
@@ -1195,6 +1212,58 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
 
     // ── RPC Notification handler ──
 
+    /** v0.1.81: commit everything buffered since the last flush as ONE uiState
+     * commit. Runs on the Main dispatcher (the notification collector), so the
+     * buffer needs no locking. Placeholder is ensured here so deltas arriving
+     * with no live stream land exactly like the old per-delta path did. */
+    private fun flushDeltas() {
+        deltaFlushJob?.cancel()
+        deltaFlushJob = null
+        if (pendingDeltaBuf.isEmpty() && pendingThinkBuf.isEmpty() && pendingTokPerSec == null) return
+        val contentChunk = pendingDeltaBuf.toString()
+        val thinkChunk = pendingThinkBuf.toString()
+        val tok = pendingTokPerSec
+        pendingDeltaBuf.setLength(0)
+        pendingThinkBuf.setLength(0)
+        pendingTokPerSec = null
+
+        val msgs = uiState.messages.toMutableList()
+        val idx = ensureStreamingPlaceholder(msgs)
+        // Placeholder creation resets streamingContentSeen; a content-bearing flush
+        // re-marks it exactly like the original per-delta MessageDelta handler did.
+        if (contentChunk.isNotEmpty()) streamingContentSeen = true
+        val cur = msgs[idx]
+        msgs[idx] = cur.copy(
+            content = if (contentChunk.isEmpty()) cur.content else cur.content + contentChunk,
+            thinkingText = if (thinkChunk.isEmpty()) cur.thinkingText
+                           else (cur.thinkingText ?: "") + thinkChunk,
+            // mirrors the original per-delta handlers: MessageDelta set
+            // thinkingHasContent, Thinking/ReasoningDelta did not
+            thinkingHasContent = cur.thinkingHasContent || contentChunk.isNotEmpty(),
+            isWaitingForFirstEvent = false,
+        )
+        uiState = uiState.copy(
+            messages = msgs,
+            isStreaming = msgs.any { it.role == "assistant" && it.isStreaming },
+            scrollGeneration = uiState.scrollGeneration + 1,
+            liveTokPerSec = tok ?: uiState.liveTokPerSec,
+        )
+        // Keep the lost-completion watchdog sliding while content flows (it was
+        // re-armed per-event before batching; per-flush is the same guard at ~9/s).
+        armStaleStreamGuard()
+    }
+
+    /** Arm the ~110ms flush heartbeat; only when the buffer is non-empty and nothing
+     * is armed — a no-cost idle check between events, not a per-delta coroutine. */
+    private fun armDeltaFlush() {
+        if (deltaFlushJob?.isActive == true) return
+        if (pendingDeltaBuf.isEmpty() && pendingThinkBuf.isEmpty() && pendingTokPerSec == null) return
+        deltaFlushJob = viewModelScope.launch {
+            delay(DELTA_FLUSH_MS)
+            flushDeltas()
+        }
+    }
+
     /** Return the index of the live streaming assistant message, creating one
      * if a queued turn's first event arrives with no placeholder yet (a prompt
      * sent mid-turn gets its placeholder lazily when its deltas start). */
@@ -1218,7 +1287,6 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     }
 
     private fun handleNotification(n: RpcNotification) {
-        armStaleStreamGuard()
         // Filter: only process events for our session
         val nSid = n.sessionId
         if (nSid != null && nSid.isNotEmpty() && nSid != sessionId && nSid != liveSid) {
@@ -1233,6 +1301,38 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 "notification MATCHED: nSid=$nSid dbKey=$sessionId liveSid=$liveSid " +
                 "event=${n::class.simpleName}")
         }
+
+        // ── v0.1.81: streaming-delta fast path ──
+        // Buffer token/thinking deltas and commit them in ~110ms batches (flushDeltas).
+        // Per-delta commits re-render the streaming bubble ~30x/sec (full list copy +
+        // full Markdown re-parse of a growing string + scroll pass) — during long
+        // thinking runs this saturated the main thread, lagged all touch input, and
+        // heated the phone until users force-killed the app.
+        if (n is RpcNotification.MessageDelta || n is RpcNotification.ThinkingDelta ||
+            n is RpcNotification.ReasoningDelta
+        ) {
+            if (n is RpcNotification.MessageDelta) {
+                streamingContentSeen = true  // first real content: stale-stream guard stands down
+                n.text?.let { pendingDeltaBuf.append(it) }
+                n.predictedPerSecond?.let { pendingTokPerSec = it }
+            } else {
+                val dtext = if (n is RpcNotification.ThinkingDelta) n.text
+                            else (n as RpcNotification.ReasoningDelta).text
+                dtext?.let { pendingThinkBuf.append(it) }
+            }
+            if (pendingDeltaBuf.length + pendingThinkBuf.length >= DELTA_FLUSH_CHAR_CAP) {
+                flushDeltas()  // cap: very fast streams commit sooner, bounded lag
+            } else {
+                armDeltaFlush()
+            }
+            return
+        }
+
+        // Non-delta event: land any buffered deltas FIRST — they precede this event on
+        // the wire, so the message list must show them before e.g. message.completed
+        // finalizes the bubble (wire order preserved).
+        flushDeltas()
+        armStaleStreamGuard()
 
         val msgs = uiState.messages.toMutableList()
 
