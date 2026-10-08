@@ -212,8 +212,14 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         DebugLog.log("INFO", "SessionsVM", "loadSessions via DASHBOARD JsonRpcClient.sessionList()")
         Log.d("Hermex", "SessionsViewModel: loading dashboard sessions")
 
+        // v0.1.83: the old fallback built a SECOND JsonRpcClient over the
+        // observer socket and never start()ed it — an unstarted client has no
+        // frame-consumer loop, so session.list sent, no response was ever
+        // dispatched, and it timed out at 30s (every "observer reconnected"
+        // line in field logs was followed by exactly that). ensureObserver()
+        // already installs a started observerClient — use it, don't clone.
         val liveClient = observerClient?.takeIf { it.isConnected }
-            ?: ensureObserver()?.let { JsonRpcClient(it, viewModelScope) }
+            ?: ensureObserver()?.let { observerClient }
         if (liveClient == null) {
             DebugLog.log("ERROR", "SessionsVM", "no observer socket — session.list deferred")
             _uiState.value = _uiState.value.copy(
