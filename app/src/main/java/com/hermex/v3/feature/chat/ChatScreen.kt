@@ -505,7 +505,54 @@ fun ChatScreen(
         }
     }
 
-    // ─── Streaming auto-scroll: state-change driven (replaces 100ms poll) ───
+    // ── Streaming frame monitor ──
+    // v0.1.82: Choreographer jank probe. While streaming, samples frame
+    // skew every 2s; logs once per 5s window with the worst frame + count
+    // of frames >100ms. THIS is the "phone slows down" proof — main-thread
+    // saturation shows up as dropped frames, so an export after a slow run
+    // says exactly when the UI thread choked (and whether it choked).
+    LaunchedEffect(state.isStreaming) {
+        if (!state.isStreaming) return@LaunchedEffect
+        val choreo = android.view.Choreographer.getInstance()
+        var frames = 0
+        var worstMs = 0f
+        var over100 = 0
+        var windowStart = System.currentTimeMillis()
+        var lastFrameNanos = 0L
+        val cb = object : android.view.Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (lastFrameNanos != 0L) {
+                    val skewMs = (frameTimeNanos - lastFrameNanos) / 1_000_000f
+                    frames++
+                    if (skewMs > worstMs) worstMs = skewMs
+                    // A frame with >100ms skew is visible jank (~6fps+ gap).
+                    if (skewMs > 100f) over100++
+                }
+                lastFrameNanos = frameTimeNanos
+                choreo.postFrameCallback(this)
+            }
+        }
+        choreo.postFrameCallback(cb)
+        // Unsubscribe when the effect dies: FrameCallback is one-shot, the
+        // repost above keeps it alive while this coroutine owns it.
+        try {
+            while (true) {
+                delay(2000)
+                val elapsedS = (System.currentTimeMillis() - windowStart) / 1000f
+                if (elapsedS >= 5f) {
+                    if (frames > 0) {
+                        DebugLog.log("SSE", "Perf",
+                            "stream fps=${"%.1f".format(frames / elapsedS)} worst=${"%.0f".format(worstMs)}ms over100ms=$over100/$frames")
+                    }
+                    frames = 0; worstMs = 0f; over100 = 0; windowStart = System.currentTimeMillis()
+                }
+            }
+        } finally {
+            choreo.removeFrameCallback(cb)
+        }
+    }
+
+    // ── Streaming auto-scroll: state-change driven (replaces 100ms poll) ───
     // Single source of truth for auto-scroll during streaming.
     // snapshotFlow + distinctUntilChanged fires ONLY when the last message's
     // visible content actually changes (text growth, thinking growth, new

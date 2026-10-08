@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.82] — Hermex 3 (com.hermex.v3) — debug logging rework: logs survive kills, stop self-eviction, measure jank
+- **Disk journal**: every entry appends to `filesDir/debuglog/hermex.log` via a write-behind thread (2s
+  flush), reloaded on app start. The log now survives crashes AND swipe-up force-kill — the moment you
+  need it. HARD CAPS: journal rotates at 2 MB into one `.1` file (oldest dropped, ~4 MB total forever);
+  last 10 exports kept; buffer raised 1000→4000 entries.
+- **No more self-eviction**: the per-delta "notification MATCHED" lines (~30/sec of streaming) evicted the
+  ring buffer in ~30s — an export after a long run contained only the crawl's tail. Deltas are counted;
+  each flush batch logs ONE aggregate line (`flush c=32/1450ch t=5/200ch tok/s=41.2`, ~9/sec).
+- **Crash handler** records the uncaught exception + flushes the journal synchronously before hand-off.
+- **Lifecycle breadcrumbs**: foreground/background transitions logged (+ flush at pause).
+- **Perf probe**: while streaming, a Choreographer frame monitor logs per 5s window `stream fps=… worst=…ms
+  over100ms=n/frames` — proves main-thread saturation (the "phone slows down" symptom) from the log.
+- **Fixed**: Level checkboxes snap-back (same non-snapshot bug v0.1.157 fixed for sections); Search filter
+  now has a UI (was dead code — export honored it, nothing set it).
+- **Exports persist**: share writes to `filesDir/debugexports/` (survives kill, last 10 kept) instead of
+  cacheDir (evictable); FileProvider paths updated; Settings shows disk usage.
+
 ## [0.1.81] — Hermex 3 (com.hermex.v3) — streaming UI batching: no more phone slowdown on long runs
 - **Long agent runs (heavy thinking/streaming) crawled the chat and lagged the whole phone** until the
   app was force-killed. Cause: every token/thinking delta committed `uiState` individually (~30/sec) —

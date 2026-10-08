@@ -120,6 +120,9 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     private var deltaFlushJob: Job? = null
     private val DELTA_FLUSH_MS = 110L
     private val DELTA_FLUSH_CHAR_CAP = 4096
+    // v0.1.82: aggregate per-batch log counters (flushDeltas emits ONE line)
+    private var pendingContentDeltas = 0
+    private var pendingThinkDeltas = 0
     // v0.1.137: was 45s (far too slow — a short turn freezes until this fires).
     // Now ~10s, and it clears immediately if a completion signal was already
     // seen for the still-streaming message (turnDoneSeen). Primary recovery is
@@ -1223,9 +1226,18 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         val contentChunk = pendingDeltaBuf.toString()
         val thinkChunk = pendingThinkBuf.toString()
         val tok = pendingTokPerSec
+        val cDel = pendingContentDeltas
+        val tDel = pendingThinkDeltas
         pendingDeltaBuf.setLength(0)
         pendingThinkBuf.setLength(0)
         pendingTokPerSec = null
+        pendingContentDeltas = 0
+        pendingThinkDeltas = 0
+        // v0.1.82 aggregate line (~9/s): the log describes the run — counts,
+        // chars, rate — instead of drowning in ~30 per-delta lines/sec.
+        DebugLog.log("SSE", "DashboardChat",
+            "flush c=$cDel/${contentChunk.length}ch t=$tDel/${thinkChunk.length}ch" +
+            (tok?.let { " tok/s=${"%.1f".format(it)}" } ?: ""))
 
         val msgs = uiState.messages.toMutableList()
         val idx = ensureStreamingPlaceholder(msgs)
@@ -1296,7 +1308,14 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 "event=${n::class.simpleName}")
             return
         }
-        if (nSid != null && nSid.isNotEmpty()) {
+        // v0.1.82: per-delta MATCHED lines are GONE — ~30 lines/sec of streaming
+        // evicted the 1000-entry ring in ~30s, so an export after a long run
+        // contained only the crawl's tail. Deltas are counted; flushDeltas logs
+        // one aggregate line per batch (~9/sec). Non-delta events keep the
+        // per-event MATCHED line (they're rare and each is meaningful).
+        val isDeltaEvent = n is RpcNotification.MessageDelta ||
+            n is RpcNotification.ThinkingDelta || n is RpcNotification.ReasoningDelta
+        if (nSid != null && nSid.isNotEmpty() && !isDeltaEvent) {
             DebugLog.log("STATE", "SessionID",
                 "notification MATCHED: nSid=$nSid dbKey=$sessionId liveSid=$liveSid " +
                 "event=${n::class.simpleName}")
@@ -1313,12 +1332,12 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         ) {
             if (n is RpcNotification.MessageDelta) {
                 streamingContentSeen = true  // first real content: stale-stream guard stands down
-                n.text?.let { pendingDeltaBuf.append(it) }
+                n.text?.let { pendingDeltaBuf.append(it); pendingContentDeltas++ }
                 n.predictedPerSecond?.let { pendingTokPerSec = it }
             } else {
                 val dtext = if (n is RpcNotification.ThinkingDelta) n.text
                             else (n as RpcNotification.ReasoningDelta).text
-                dtext?.let { pendingThinkBuf.append(it) }
+                dtext?.let { pendingThinkBuf.append(it); pendingThinkDeltas++ }
             }
             if (pendingDeltaBuf.length + pendingThinkBuf.length >= DELTA_FLUSH_CHAR_CAP) {
                 flushDeltas()  // cap: very fast streams commit sooner, bounded lag
@@ -1736,8 +1755,6 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             }
         }
 
-        // Emit updated state with scrollGeneration bump for auto-scroll.
-        //
         // v0.1.137 — self-healing finalization. Normally `isStreaming` follows
         // whether any assistant message is still streaming (a queued turn's
         // first delta creates its placeholder mid-turn). BUT if we've already

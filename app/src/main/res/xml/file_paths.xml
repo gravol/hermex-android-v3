@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
+    <!-- v0.1.82: exports now live in filesDir/debugexports (persistent —
+         survives force-kill); cache-path kept for legacy share paths. -->
+    <files-path name="debug_exports" path="debugexports/" />
+    <files-path name="debug_journal" path="debuglog/" />
     <cache-path name="debug_logs" path="/" />
 </paths>

@@ -22,7 +22,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -499,8 +502,9 @@ fun SettingsScreen(
             Divider(modifier = Modifier.padding(vertical = 8.dp))
 
             Text("Debug Log", style = MaterialTheme.typography.titleSmall)
+            val diskKb = DebugLog.diskSizeBytes() / 1024
             Text(
-                "${DebugLog.entryCount()} entries in buffer",
+                "${DebugLog.entryCount()} entries in buffer · ${diskKb} KB on disk (capped ~4 MB, self-trimming)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -849,10 +853,14 @@ private fun DebugLogFilters() {
     // values through Compose snapshot state so the whole panel re-renders on
     // every toggle. The setters still write DebugLog directly (that's what the
     // export path reads); we just mirror into local val/vars for display.
+    // v0.1.82: level toggles mirror into snapshot state too (the v0.1.157 fix
+    // covered sections only — levels had the identical snap-back bug: the
+    // checkbox animated then reverted because nothing triggered recomposition).
     var sectionEnabled by remember { mutableStateOf(DebugLog.isSectionEnabled(DebugLog.Section.CONNECTION)) }
     var appEnabled by remember { mutableStateOf(DebugLog.isSectionEnabled(DebugLog.Section.APP)) }
     var systemEnabled by remember { mutableStateOf(DebugLog.isSectionEnabled(DebugLog.Section.SYSTEM)) }
-    val levelEnabled = levels.associateBy({ it.first }) { DebugLog.isLevelEnabled(it.first) }
+    var levelEnabled by remember { mutableStateOf(levels.associateBy({ it.first }) { DebugLog.isLevelEnabled(it.first) }) }
+    var search by remember { mutableStateOf(DebugLog.searchQuery() ?: "") }
 
     Column {
         // Section toggles
@@ -907,11 +915,35 @@ private fun DebugLogFilters() {
                     checked = levelEnabled[level] == true,
                     onCheckedChange = { enabled ->
                         DebugLog.setLevelEnabled(level, enabled)
+                        levelEnabled = levelEnabled.toMutableMap().apply { this[level] = enabled }
                     },
                 )
                 Text(label, style = MaterialTheme.typography.bodyMedium)
             }
         }
+
+        Spacer(Modifier.height(10.dp))
+
+        // v0.1.82: search box — DebugLog.setSearch() existed with a working
+        // export filter but no UI ever called it. Export/clipboards honor it.
+        OutlinedTextField(
+            value = search,
+            onValueChange = {
+                search = it
+                DebugLog.setSearch(it)
+            },
+            label = { Text("Search log (export filter)") },
+            singleLine = true,
+            trailingIcon = {
+                if (search.isNotEmpty()) {
+                    IconButton(onClick = {
+                        search = ""
+                        DebugLog.setSearch(null)
+                    }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
 
         Spacer(Modifier.height(10.dp))
 
@@ -922,6 +954,8 @@ private fun DebugLogFilters() {
                 sectionEnabled = true
                 appEnabled = true
                 systemEnabled = true
+                levelEnabled = levels.associateBy({ it.first }) { true }
+                search = ""
             },
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -944,8 +978,11 @@ private suspend fun exportAndShare(context: Context) {
             )
 
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val file = File(context.cacheDir, "hermex_debug_$timestamp.txt")
-            file.writeText(content)
+            // v0.1.82: DebugLog.writeExportFile keeps a persistent copy in
+            // filesDir/debugexports (survives force-kill; last 10 kept) —
+            // cacheDir files get evicted and vanish with a force-kill, which
+            // is exactly when a captured log is wanted.
+            val file = DebugLog.writeExportFile(content)
 
             val uri = FileProvider.getUriForFile(
                 context,
