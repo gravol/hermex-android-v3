@@ -844,7 +844,12 @@ private fun DebugLogFilters() {
         DebugLog.Section.APP to "App",
         DebugLog.Section.SYSTEM to "System",
     )
-    val levels = listOf("REQ" to "Requests", "RESP" to "Responses", "SSE" to "Events", "INFO" to "Info", "ERROR" to "Errors")
+    val levels = listOf(
+        "REQ" to "Requests", "RESP" to "Responses", "SSE" to "Events",
+        "INFO" to "Info", "ERROR" to "Errors",
+        // v0.1.85: the story levels — session lifecycle/self-heal, RPC calls, socket.
+        "STATE" to "Session & heal", "RPC" to "RPC calls", "WS" to "Socket",
+    )
 
     // v0.1.157: the filter state lives in plain (non-snapshot) mutable fields
     // on DebugLog, so toggling a checkbox mutated them WITHOUT triggering a

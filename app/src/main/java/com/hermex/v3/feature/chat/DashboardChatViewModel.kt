@@ -428,9 +428,27 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 "$op self-heal resume(#$resumeCount): dbKey=$sessionId liveSid=$liveSid — retrying attach")
             true
         } else {
+            // v0.1.85: the "retry attach bare" fallback was a lie — file.attach is a
+            // pure runtime lookup server-side (_sess_nowait); it NEVER materializes a
+            // session. A fresh chat has no DB row (only prompt.submit/session.create
+            // make one), so resume 4007s and the bare retry 4001s forever.
+            // Materialize it FOR REAL: session.create, adopt the new DB key, retry.
             DebugLog.log("STATE", "SessionID",
-                "$op self-heal resume exhausted 4007 — retrying attach bare (first turn materializes session): dbKey=$sessionId")
-            true  // fresh-session path: the attach itself may materialize the row
+                "$op self-heal resume exhausted 4007 (no stored row) — session.create + adopt key: dbKey=$sessionId")
+            val newKey = runCatching { rpcClient.createSession() }.getOrNull()
+            if (newKey != null) {
+                DebugLog.log("STATE", "SessionID",
+                    "$op self-heal created fresh session: old=$sessionId new=$newKey — retrying attach")
+                sessionId = newKey
+                liveSid = ""
+                resumedSessionId = ""
+                resumeCount = 0
+                true
+            } else {
+                DebugLog.log("STATE", "SessionID",
+                    "$op self-heal session.create FAILED — attach cannot proceed: dbKey=$sessionId")
+                false
+            }
         }
     } catch (healErr: Exception) {
         DebugLog.log("STATE", "SessionID",

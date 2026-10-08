@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.85] — Hermex 3 (com.hermex.v3) — attach-4001 real fix + debug exports carry the session story
+- **`file.attach` 4001 on fresh chats fixed for real**: the 0.1.83 self-heal's fallback assumed
+  attaching materializes a session server-side — it never does (`file.attach` is a pure runtime
+  lookup; only `prompt.submit`/`session.create` make a row). On a brand-new chat resume 4007s
+  (no stored row) and the bare retry 4001'd forever — your log's `file.attach retry failed`.
+  Now the heal materializes the session itself: `session.create` → adopt the new DB key → retry.
+- **Debug exports now include STATE / RPC / WS lines** ("Session & heal", "RPC calls", "Socket"
+  checkboxes, on by default): the entire session-lifecycle + self-heal trail lives in STATE, and
+  the default export filter hid it — diagnosing the 4001 trail was blind. Levels are a strict
+  filter; empty = everything.
+
+---
+
 ## [0.1.84] — Hermex 3 (com.hermex.v3) — log secret redaction + self-healing attach + sessions-list 30s timeout fix
 
 (0.1.83 shipped redaction + attach self-heal; this release adds the sessions fix below.)

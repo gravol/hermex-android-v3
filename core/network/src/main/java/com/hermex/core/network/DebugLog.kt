@@ -57,7 +57,7 @@ object DebugLog {
     // means every section not explicitly excluded.
     enum class Section { CONNECTION, APP, SYSTEM }
 
-    private val activeLevels = mutableSetOf("REQ", "RESP", "SSE", "ERROR", "INFO")
+    private val activeLevels = mutableSetOf("REQ", "RESP", "SSE", "ERROR", "INFO", "STATE", "RPC", "WS")
     private val activeSections = mutableMapOf(Section.CONNECTION to true, Section.APP to true, Section.SYSTEM to true)
     private var searchQuery: String? = null
 
@@ -73,7 +73,7 @@ object DebugLog {
 
     /** Clear all sections/levels back to "show everything". */
     fun resetFilters() {
-        activeLevels.clear(); activeLevels.addAll(listOf("REQ", "RESP", "SSE", "ERROR", "INFO"))
+        activeLevels.clear(); activeLevels.addAll(CORE_LEVELS)
         activeSections[Section.CONNECTION] = true
         activeSections[Section.APP] = true
         activeSections[Section.SYSTEM] = true
@@ -85,8 +85,24 @@ object DebugLog {
         searchQuery = if (query.isNullOrBlank()) null else query.trim().lowercase()
     }
 
+    /** v0.1.85: the story levels — REQ/RESP/SSE/INFO/ERROR plus the diagnostic
+     * trio STATE (session lifecycle + self-heal), RPC (method calls), WS
+     * (transport). Field debugging without these was blind: the 4001 self-heal
+     * wrote its whole trail into STATE and exports didn't carry it. */
+    val CORE_LEVELS = setOf("REQ", "RESP", "SSE", "INFO", "ERROR", "STATE", "RPC", "WS")
+
+    /** Show the core story levels only (Settings toggle). Empty set = all levels. */
+    fun setLevelsCore() {
+        activeLevels.clear(); activeLevels.addAll(CORE_LEVELS)
+    }
+
+    fun isLevelEnabled(level: String): Boolean = activeLevels.contains(level)
+
+    /** True when the export filter is exactly the core set. */
+    fun isCoreLevelFilter(): Boolean = activeLevels == CORE_LEVELS
+
     private fun matchesFilters(entry: Entry): Boolean {
-        if (!activeLevels.contains(entry.level)) return false
+        if (activeLevels.isNotEmpty() && !activeLevels.contains(entry.level)) return false
         if (!activeSections.getValue(entry.section)) return false
         val q = searchQuery ?: return true
         return entry.message.lowercase().contains(q) ||
