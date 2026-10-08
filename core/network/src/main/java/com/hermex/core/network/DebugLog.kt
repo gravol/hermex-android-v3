@@ -96,8 +96,6 @@ object DebugLog {
         activeLevels.clear(); activeLevels.addAll(CORE_LEVELS)
     }
 
-    fun isLevelEnabled(level: String): Boolean = activeLevels.contains(level)
-
     /** True when the export filter is exactly the core set. */
     fun isCoreLevelFilter(): Boolean = activeLevels == CORE_LEVELS
 

@@ -1,3 +1,11 @@
+## v0.1.86 (vc15) — 2026-10-08
+- Build fix: DebugLog.kt had a duplicate `isLevelEnabled` (added in the v0.1.85 level work) —
+  Kotlin `Conflicting overloads` broke `:core:network:compileReleaseKotlin`, so v0.1.85 never
+  built on CI and never shipped. Removed the duplicate; v0.1.85's features (attach-4001
+  session.create heal, STATE/RPC/WS in exports, Settings level toggles) ship in this release.
+- Lesson: run `assembleRelease` LOCALLY before pushing a release tag — v0.1.85 shipped a
+  compile error straight to CI.
+
 # Changelog
 
 All notable changes to Hermex Android are documented here.
