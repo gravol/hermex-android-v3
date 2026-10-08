@@ -244,9 +244,10 @@ object DebugLog {
 
     // ── Logging ────────────────────────────────────────────────────────
 
-    /** Log a message. Thread-safe; append-only. */
+    /** Log a message. Thread-safe; append-only. Secrets are redacted at entry —
+     * the journal is shareable and REQ/RESP paths dump bodies verbatim. */
     fun log(level: String, tag: String, message: String) {
-        val entry = Entry(System.currentTimeMillis(), level, tag, message)
+        val entry = Entry(System.currentTimeMillis(), level, tag, redactSecrets(message))
         synchronized(buffer) {
             if (buffer.isEmpty()) firstTs = entry.timestamp
             while (buffer.size >= MAX_ENTRIES) buffer.pollFirst()
@@ -279,6 +280,32 @@ object DebugLog {
     fun resp(code: Int, url: String, body: String?) {
         val truncated = if (body != null && body.length > 2000) body.take(2000) + "\n... [truncated ${body.length} total]" else body
         log("RESP", "HTTP", "$code $url${if (truncated != null) "\n$truncated" else ""}")
+    }
+
+    // ── Secret redaction ──
+    // v0.1.83: REQ/RESP logging dumps request/response bodies verbatim, which
+    // put the dashboard password, session cookies, ws-tickets and Authorization
+    // headers straight into the journal — and the journal is SHAREABLE. Redact
+    // at the single choke point so every logging path is covered, not just the
+    // OkHttp interceptor.
+    private val secretPatterns = listOf(
+        Regex("(\"(?:password|passphrase|token|api_key|apikey|secret)\"\\s*:\\s*\")[^\"]*(\")", RegexOption.IGNORE_CASE),
+        Regex("(\"ticket\"\\s*:\\s*\")[^\"]*(\")", RegexOption.IGNORE_CASE),
+        Regex("(?i)^cookie:.*$", RegexOption.MULTILINE),
+        Regex("(?i)^set-cookie:.*$", RegexOption.MULTILINE),
+        Regex("(?i)^authorization:.*$", RegexOption.MULTILINE),
+        Regex("[?&]ticket=[^&\\s]*"),
+    )
+
+    private fun redactSecrets(s: String): String {
+        var out = s
+        out = secretPatterns[0].replace(out) { m -> "${m.groupValues[1]}***${m.groupValues[2]}" }
+        out = secretPatterns[1].replace(out) { m -> "${m.groupValues[1]}***${m.groupValues[2]}" }
+        out = secretPatterns[2].replace(out, "Cookie: ***")
+        out = secretPatterns[3].replace(out, "Set-Cookie: ***")
+        out = secretPatterns[4].replace(out, "Authorization: ***")
+        out = secretPatterns[5].replace(out, "&ticket=***")
+        return out
     }
 
     /** Shortcut for SSE event logging. */

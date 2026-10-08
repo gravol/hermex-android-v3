@@ -400,6 +400,44 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
      * directly (the genuinely-fresh-session path, where the server creates the
      * row on first turn). Any other error propagates to the caller.
      */
+    /**
+     * v0.1.83: attach calls (file/image) have NO self-heal of their own — on a
+     * reaped session (4001) they just surface "session not found" and the send
+     * dies. Recover the exact way submitWithSelfHeal does (force a live socket
+     * if needed, session.resume with 4007 backoff) and report whether the
+     * caller should retry the attach. Non-4001 errors return false (caller
+     * shows the real error).
+     */
+    private suspend fun healReapedSessionForAttach(op: String): Boolean = try {
+        if (!wsConnection.isConnected) {
+            DebugLog.log("STATE", "SessionID",
+                "$op 4001 — socket not Connected, forceConnect() before resume: dbKey=$sessionId")
+            wsConnection.forceConnect()
+        }
+        val result = try {
+            rpcClient.sessionResume(sessionId)
+        } catch (resume4007: JsonRpcException) {
+            if (resume4007.code == 4007) resumeUntilLive(selfHealRetries, selfHealBaseDelayMs, selfHealMaxDelayMs)
+            else throw resume4007
+        }
+        if (result != null) {
+            resumeCount++
+            liveSid = result.session_id
+            resumedSessionId = result.resumed ?: sessionId
+            DebugLog.log("STATE", "SessionID",
+                "$op self-heal resume(#$resumeCount): dbKey=$sessionId liveSid=$liveSid — retrying attach")
+            true
+        } else {
+            DebugLog.log("STATE", "SessionID",
+                "$op self-heal resume exhausted 4007 — retrying attach bare (first turn materializes session): dbKey=$sessionId")
+            true  // fresh-session path: the attach itself may materialize the row
+        }
+    } catch (healErr: Exception) {
+        DebugLog.log("STATE", "SessionID",
+            "$op self-heal failed: ${healErr.message}")
+        false
+    }
+
     private suspend fun submitWithSelfHeal(text: String) {
         try {
             rpcClient.promptSubmit(sessionId, text)
@@ -838,6 +876,24 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 DebugLog.log("RPC", "DashboardChat", "image staged — submitting prompt")
                 sendMessage(finalText)
             } catch (e: Exception) {
+                // v0.1.83: 4001 = session reaped — self-heal (resume) and retry ONCE.
+                if (e is JsonRpcException && e.code == 4001 && healReapedSessionForAttach("image.attach")) {
+                    DebugLog.log("RPC", "DashboardChat", "image.attach retrying after self-heal")
+                    try {
+                        val attach2 = rpcClient.attachImage(sessionId, imageBase64, filename)
+                        val attachText2 = attach2["text"]?.jsonPrimitive?.contentOrNull
+                        val finalText2 = text.ifBlank { attachText2 ?: "[User attached image]" }
+                        sendMessage(finalText2)
+                        return@launch
+                    } catch (retry: Exception) {
+                        DebugLog.log("ERROR", "DashboardChat", "image.attach retry failed: ${retry.message}")
+                        uiState = uiState.copy(
+                            error = retry.message ?: "Image attach failed",
+                            isStreaming = false,
+                        )
+                        return@launch
+                    }
+                }
                 Log.e("Hermex", "DashboardChatViewModel: attachImage failed", e)
                 DebugLog.log("ERROR", "DashboardChat", "image.attach failed: ${e.message}")
                 uiState = uiState.copy(
@@ -866,6 +922,29 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 }
                 sendMessage(finalText)
             } catch (e: Exception) {
+                // v0.1.83: 4001 = session reaped — self-heal (resume) and retry ONCE,
+                // same recovery prompt.submit uses. Other errors surface as before.
+                if (e is JsonRpcException && e.code == 4001 && healReapedSessionForAttach("file.attach")) {
+                    DebugLog.log("RPC", "DashboardChat", "file.attach retrying after self-heal")
+                    try {
+                        val dataUrl2 = "data:$mimeType;base64,$fileBase64"
+                        val attach2 = rpcClient.attachFile(sessionId, dataUrl2, filename)
+                        val refText2 = attach2["ref_text"]?.jsonPrimitive?.contentOrNull
+                        val finalText2 = buildString {
+                            if (text.isNotBlank()) append(text).append('\n')
+                            append(refText2 ?: "[User attached file]")
+                        }
+                        sendMessage(finalText2)
+                        return@launch
+                    } catch (retry: Exception) {
+                        DebugLog.log("ERROR", "DashboardChat", "file.attach retry failed: ${retry.message}")
+                        uiState = uiState.copy(
+                            error = retry.message ?: "File attach failed",
+                            isStreaming = false,
+                        )
+                        return@launch
+                    }
+                }
                 Log.e("Hermex", "DashboardChatViewModel: attachFile failed", e)
                 DebugLog.log("ERROR", "DashboardChat", "file.attach failed: ${e.message}")
                 uiState = uiState.copy(

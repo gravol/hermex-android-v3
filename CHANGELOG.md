@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.83] — Hermex 3 (com.hermex.v3) — log secret redaction + self-healing file/image attach
+- **Secret redaction in the debug journal** (found by the v0.1.82 log itself: the dashboard password,
+  ws-tickets, cookies and Authorization headers were logged verbatim and the journal is SHAREABLE).
+  Redaction at the DebugLog choke point: `"password"/"token"/"api_key"/"secret"` JSON fields, `"ticket"`
+  fields, `Cookie:`/`Set-Cookie:`/`Authorization:` headers, `?ticket=` URLs → `***`. Applies to every
+  entry at write time — memory, disk journal, exports, clipboards.
+- **Self-healing file/image attach**: sending a file to a reaped session (4001 "session not found")
+  used to die with a raw error (seen live in the v0.1.82 log). Attach now runs the SAME recovery
+  prompt.submit uses — force a live socket if needed, `session.resume` with 4007 backoff — and retries
+  the attach once. Non-4001 errors surface unchanged.
+- Note: the 30s `session.list` timeouts on fresh observer sockets are logged and visible; investigation
+  ongoing (sessions screen only, chat unaffected).
+
 ## [0.1.82] — Hermex 3 (com.hermex.v3) — debug logging rework: logs survive kills, stop self-eviction, measure jank
 - **Disk journal**: every entry appends to `filesDir/debuglog/hermex.log` via a write-behind thread (2s
   flush), reloaded on app start. The log now survives crashes AND swipe-up force-kill — the moment you
