@@ -1,3 +1,11 @@
+## v0.1.873 (vc19) — 2026-10-12
+- Version bump only, to ship the warm-tap deep-link fix. v0.1.872's tag landed on
+  `d479f92`; the warm-tap commit arrived with the tag already present, so CI's
+  "tag already exists" guard skipped the build and the released APK never got it
+  (the phone had it via adb — Obtainium would not have). New version → new tag →
+  CI builds from HEAD. Released APK verified: CI checked out master at `f59e3b5`,
+  warm-tap commit `a2fe458` is its ancestor.
+
 ## v0.1.872 (vc18) — 2026-10-12
 - **Cron/alert pushes are now clickable.** Turn-finished pushes opened the session
   because they carry `X-Click: hermex://session/<key>`; cron output and infra alerts
