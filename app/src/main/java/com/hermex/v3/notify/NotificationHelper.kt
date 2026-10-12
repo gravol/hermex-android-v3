@@ -41,6 +41,7 @@ object NotificationHelper {
     const val CHANNEL_REPLY = "reply"
     const val EXTRA_OPEN_SESSION = "open_session"
     const val EXTRA_OPEN_TITLE = "open_title"
+    const val EXTRA_OPEN_ROUTE = "open_route"
     const val EXTRA_REPLY_SESSION = "reply_session"
     const val EXTRA_REPLY_TITLE = "reply_title"
     const val EXTRA_NTFY_SERVER = "ntfy_server"
@@ -94,6 +95,26 @@ object NotificationHelper {
         return PendingIntent.getActivity(
             context,
             sessionKey.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /**
+     * v0.1.872: deep link to a nav route. Pushes that carry no `hermex://session/`
+     * click (cron output, infra alerts) previously had NO content intent at all, so
+     * tapping them opened the app and stopped at whatever screen was already up.
+     * The app owns its routes, so the server never needs to learn them — a plain
+     * text push still gets a meaningful tap target.
+     */
+    private fun openRouteIntent(context: Context, route: String, requestCode: Int): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_OPEN_ROUTE, route)
+        }
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -281,12 +302,18 @@ object NotificationHelper {
         val label = title.ifBlank { "Hermes" }
         val channelId = if (priority >= 4) CHANNEL_ALERTS else CHANNEL_CRON
         val nid = 3000 + ((msgId.hashCode() and 0x7fffffff) % 9000)
+        // Tap target: cron output opens the Cron screen, everything else the
+        // session list. A server-published hermex://route/<name> click wins.
+        val route = link?.takeIf { it.startsWith("hermex://route/") }
+            ?.removePrefix("hermex://route/")
+            ?: if (topic == "hermes-cron") "cron" else "home"
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(label)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setAutoCancel(true)
+            .setContentIntent(openRouteIntent(context, route, nid))
             .setPriority(if (priority >= 4) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
             .addAction(replyActionNtfy(context, NtfySubscriptionService.DEFAULT_SERVER, "hermes-in", label))
             .build()

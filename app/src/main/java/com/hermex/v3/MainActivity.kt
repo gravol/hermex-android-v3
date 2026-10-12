@@ -146,6 +146,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Nav routes a notification deep link may target (must match composable() routes). */
+private val DEEP_LINK_ROUTES = setOf("home", "cron", "skills", "config", "settings", "soul")
+
 @Composable
 fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
     val navController = rememberNavController()
@@ -164,6 +167,13 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
             val title = intent.getStringExtra(NotificationHelper.EXTRA_OPEN_TITLE) ?: sessionKey
             navController.navigate(NotificationHelper.chatRoute(sessionKey, title)) {
                 launchSingleTop = true
+            }
+        } else {
+            // v0.1.872: route deep links from link-less pushes (cron output,
+            // infra alerts). Whitelisted — an unknown route must not throw.
+            val route = intent.getStringExtra(NotificationHelper.EXTRA_OPEN_ROUTE)
+            if (route != null && route in DEEP_LINK_ROUTES && DashboardApiClient.isConfigured) {
+                navController.navigate(route) { launchSingleTop = true }
             }
         }
     }
