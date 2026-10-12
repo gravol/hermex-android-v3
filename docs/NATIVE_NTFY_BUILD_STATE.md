@@ -14,14 +14,22 @@ If context compacts: read this file + the spec, `git log --oneline -8`, resume h
       KEEP-DECISION: app's live WS turn/approval notifications (DashboardChatViewModel+
       NotificationHelper) STAY — they know screen visibility; server lease-suppression
       prevents duplicates. Server INTERACTIVE set needs "dashboard" platform (verify Phase 2).
-- [x] 2026-10-12 18:10 Phase 2 DONE: commit B 9714680 (+671):
+- [x] 2026-10-12 18:10 Phase 2 DONE: commit B = d89ef84 (final, after 2 compile fixes amended in):
       NtfySubscriptionService.kt (WS+catch-up+backoff), NotificationHelper.postNtfyMessage
       routing (link→chat-opens w/ shared id = no doubles; priority≥4→alerts; else cron),
       reply→hermes-in via NtfyClient, Settings "Push Delivery" section, manifest service,
-      version bump 0.1.87/16 in-commit. Server: turnwatch INTERACTIVE += "desktop" (done, live).
-      NOTE: A got renumbered 259b796 (amend). Order: 259b796 (A) then 9714680 (B). Revert = git revert 9714680 259b796.
-- [~] Phase 3 IN PROGRESS: gradle assembleRelease running (bg proc_9f0f47670bef);
-      next: apksigner verify, push A+B (separate tag push rule!), gh release, mark latest
+      version bump 0.1.87/16 in-commit. Server: turnwatch INTERACTIVE += "desktop".
+      COMPILE FIXES (amended into B, lesson-worthy):
+        1. `this` inside serviceScope.launch = CoroutineScope, not the Service →
+           postReplyFailed(this@NotificationReplyService, ...).
+        2. OkHttp has no dispatcher.shutdown() — share one OkHttpClient via `by lazy`.
+        3. Nullable link chain: link?.takeIf{…}?.removePrefix(…) (smart-cast rules).
+- [x] 2026-10-12 18:25 Phase 3a: BUILD SUCCESSFUL (2m9s). Pushed master 59edda2..d89ef84.
+      Order on origin: 259b796 (A) → d89ef84 (B). Revert = git revert d89ef84 259b796.
+      CI flow: version bump IN B → CI builds from pushed HEAD, creates tag v0.1.87 + release.
+- [ ] Phase 3b: verify CI: gh run list → gh release view v0.1.87 (isDraft=false, asset size>0,
+      aapt2 badging versionCode=16). If CI skipped (guard) → manual: gh release create v0.1.87
+      app/build/outputs/apk/release/app-release.apk + gh release edit --latest.
 - [ ] Phase 4: Jeff installs via Obtainium → 5-min test cron → confirm Hermex native push
       QA context: test phone = Pixel 8 WITH ChatGPT/Grok/Claude apps installed (Jeff, 17:55).
       Hermex notifications post under its own channels — verify the test notification
