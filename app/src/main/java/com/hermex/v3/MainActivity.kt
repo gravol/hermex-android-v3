@@ -131,6 +131,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // v0.1.872: setIntent() alone does not recompose, so a tap while the app
+        // is already foreground never re-fired the deep-link effect (cold starts
+        // worked, warm taps did nothing). Bumping snapshot state makes the nav
+        // effect key re-fire on every tap.
+        intentSeq++
     }
 
     // v0.1.75: track app foreground/background so turn-finished notifications
@@ -149,6 +154,16 @@ class MainActivity : ComponentActivity() {
 /** Nav routes a notification deep link may target (must match composable() routes). */
 private val DEEP_LINK_ROUTES = setOf("home", "cron", "skills", "config", "settings", "soul")
 
+/**
+ * Bumped on every onNewIntent. The deep-link LaunchedEffect keys on this because
+ * `activity.intent` is not observable state: setIntent() triggers no recomposition,
+ * so the key is never re-evaluated and warm taps (app already foreground) silently
+ * do nothing. Intent.equals also compares extras, so an identical repeat tap would
+ * not change the key even if it were read.
+ */
+var intentSeq by androidx.compose.runtime.mutableIntStateOf(0)
+    private set
+
 @Composable
 fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
     val navController = rememberNavController()
@@ -160,7 +175,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
     // setIntent, so this effect re-fires per tap; launchSingleTop makes re-taps
     // to the same chat a no-op instead of stacking duplicates.
     val activity = LocalContext.current as? ComponentActivity
-    LaunchedEffect(activity?.intent) {
+    LaunchedEffect(intentSeq) {
         val intent = activity?.intent ?: return@LaunchedEffect
         val sessionKey = intent.getStringExtra(NotificationHelper.EXTRA_OPEN_SESSION)
         if (!sessionKey.isNullOrBlank() && DashboardApiClient.isConfigured) {
