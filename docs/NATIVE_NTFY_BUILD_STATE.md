@@ -31,14 +31,33 @@ If context compacts: read this file + the spec, `git log --oneline -8`, resume h
       (isDraft=false, app-release.apk 30.8MB uploaded, aapt2: versionCode=16 vc confirmed,
       dex contains NtfySubscriptionService x13 — the real built code). Docs-only CI run
       failing = guard path, harmless. CHANGELOG + handoff pushed (e457b8d).
-- [~] Phase 4 READY: test job f966f882a930 "ntfy native test" created + PAUSED.
-      Jeff: Obtainium update → install → tell Hermes → `hermes cron run f966f882a930`
-      → notification must appear as HERMEX on the phone (not ntfy app, not ChatGPT/Grok/Claude).
-      Then delete ntfy app from phone (server + topics stay).
-      QA context: test phone = Pixel 8 WITH ChatGPT/Grok/Claude apps installed (Jeff, 17:55).
-      Hermex notifications post under its own channels — verify the test notification
-      shows as Hermex, not confusable with those apps' notifications.
+- [x] Phase 4 DONE 2026-10-12 21:15 PDT: v0.1.87 (vc16) installed via Obtainium, ntfy
+      phone app uninstalled. TEST FAILED — zero notifications. Root cause: v0.1.87's
+      subscription invented a protocol ntfy does not have (see below). Fixed in
+      v0.1.871 (vc17, commit 51713ce), installed via adb, ALL RAILS VERIFIED:
+      hermes-out / hermes-sessions / hermes-cron / hermes-alerts publishes, a real
+      `deliver=ntfy` cron run (job 9e58c70c83c5), and an ops-published
+      `hermex://session/...` deep link → all arrive as Hermex notifications
+      (alerts channel for priority>=4 + session links, cron channel for the rest).
 - [ ] Phase 5: handoff/CHANGELOG docs, skill update
+
+## Protocol ground truth (ntfy 2.24, verified 2026-10-12 — the spec's assumptions were wrong)
+- WebSocket endpoint: `<topic>/ws` (101 upgrade). `/ws` = SPA HTML (HTTP 200) → OkHttp
+  handshake fails. Multi-topic: `/a,b/ws` = ONE connection. `/stream` does not exist;
+  SSE is `<topic>/sse`.
+- Catch-up = `?since=<id|unix-seconds|duration>` on the upgrade URL. ntfy accepts NO
+  client frames — `{"type":"subscribe"...}` / `catch-up` frames are ignored server-side.
+- Frames carry `event` (open/message/keepalive/poll_request), NOT `type`.
+- Message ids are base64 snowflakes with a random component: NOT lexicographically
+  ordered, NOT numerically monotonic (measured: 10 publishes in order decode out of
+  order). `id <= lastId` is NOT a duplicate test. Order by `time` (unix seconds);
+  de-dupe ids within the same second.
+- Deep link = `click` field (publish header `X-Click` / `Click`). `Link` header =
+  ATTACHMENT url, never reaches the message JSON → hermex:// links published as Link
+  were silently dropped (hermes-ops/app/ntfy.py fixed to X-Click).
+- Topics BigRed publishes to: hermes-out (gateway replies + cron deliver=ntfy),
+  hermes-sessions (turnwatch), hermes-cron + hermes-alerts (ops notifier). The app's
+  old default listened to only the first two.
 
 ## Revised deletion inventory (verified against code, supersedes spec's broad set)
 DELETE (commit A):

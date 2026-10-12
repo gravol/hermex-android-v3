@@ -1,3 +1,22 @@
+## v0.1.871 (vc17) — 2026-10-12
+- **Native ntfy delivery actually works now.** v0.1.87's subscription invented a protocol
+  ntfy does not implement, so it never delivered a single notification: it dialed `/ws`
+  (ntfy serves its web app's HTML there → HTTP 200 → the WS upgrade fails → silent
+  reconnect loop), sent `subscribe`/`catch-up` client frames (ntfy accepts no client
+  frames), read frames by `type` (they carry `event`), de-duped with `id <= lastId`
+  (ntfy ids are base64 snowflakes with a random component — NOT lexicographically
+  ordered, so that filter drops messages), and read the deep link from `link` (ntfy's
+  ATTACHMENT field; the tap target is `click`).
+- Correct protocol: WebSocket is `<topic>/ws`, topics share one connection as
+  `/a,b/ws?since=<unix-seconds>`; cursor is the message `time` per topic (persisted),
+  same-second ids de-dupe replays; deep link from `click`.
+- Default topics now cover every topic BigRed publishes to
+  (`hermes-out,hermes-sessions,hermes-cron,hermes-alerts`) — hermes-cron/hermes-alerts
+  were a silent delivery hole.
+- Server side (hermes-ops/app/ntfy.py): deep links publish as `X-Click`, not `Link`.
+- Verified on Pixel 10a: all four topics, a real `deliver=ntfy` cron run, and an
+  ops-published `hermex://session/...` deep link all arrive as Hermex notifications.
+
 ## v0.1.87 (vc16) — 2026-10-12
 - **Native ntfy push delivery**: Hermex speaks the ntfy WebSocket protocol itself.
   Cron output, infra alerts, and finished background sessions arrive as plain Hermex
