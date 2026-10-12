@@ -27,10 +27,14 @@ If context compacts: read this file + the spec, `git log --oneline -8`, resume h
 - [x] 2026-10-12 18:25 Phase 3a: BUILD SUCCESSFUL (2m9s). Pushed master 59edda2..d89ef84.
       Order on origin: 259b796 (A) → d89ef84 (B). Revert = git revert d89ef84 259b796.
       CI flow: version bump IN B → CI builds from pushed HEAD, creates tag v0.1.87 + release.
-- [ ] Phase 3b: verify CI: gh run list → gh release view v0.1.87 (isDraft=false, asset size>0,
-      aapt2 badging versionCode=16). If CI skipped (guard) → manual: gh release create v0.1.87
-      app/build/outputs/apk/release/app-release.apk + gh release edit --latest.
-- [ ] Phase 4: Jeff installs via Obtainium → 5-min test cron → confirm Hermex native push
+- [x] 2026-10-12 18:30 Phase 3b DONE: CI run 38288336624 success → v0.1.87 release live
+      (isDraft=false, app-release.apk 30.8MB uploaded, aapt2: versionCode=16 vc confirmed,
+      dex contains NtfySubscriptionService x13 — the real built code). Docs-only CI run
+      failing = guard path, harmless. CHANGELOG + handoff pushed (e457b8d).
+- [~] Phase 4 READY: test job f966f882a930 "ntfy native test" created + PAUSED.
+      Jeff: Obtainium update → install → tell Hermes → `hermes cron run f966f882a930`
+      → notification must appear as HERMEX on the phone (not ntfy app, not ChatGPT/Grok/Claude).
+      Then delete ntfy app from phone (server + topics stay).
       QA context: test phone = Pixel 8 WITH ChatGPT/Grok/Claude apps installed (Jeff, 17:55).
       Hermex notifications post under its own channels — verify the test notification
       shows as Hermex, not confusable with those apps' notifications.
