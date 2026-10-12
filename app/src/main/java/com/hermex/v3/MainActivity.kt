@@ -41,6 +41,9 @@ import com.hermex.v3.feature.system.SkillsScreen
 import com.hermex.v3.notify.NotificationHelper
 import com.hermex.core.network.DashboardApiClient
 import com.hermex.core.network.DebugLog
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import com.hermex.v3.ui.theme.HermexTheme
 import com.hermex.v3.ui.theme.UiColorOverrides
 import com.hermex.v3.ui.theme.hexToColor
@@ -53,6 +56,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // Notification channels (turn-finished/cron/approval/reply)
         NotificationHelper.ensureChannels(this)
+        // v0.1.87: native ntfy subscription (push delivery rail) — follows the
+        // setting in Settings; starts on every launch, idempotent (startForegroundService).
+        kotlinx.coroutines.MainScope().launch {
+            val settings = SettingsRepository(applicationContext)
+            if (settings.ntfyEnabled.first() != false) {
+                com.hermex.v3.notify.NtfySubscriptionService.start(applicationContext)
+            }
+        }
         // Android 13+ needs a runtime grant for notifications
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)

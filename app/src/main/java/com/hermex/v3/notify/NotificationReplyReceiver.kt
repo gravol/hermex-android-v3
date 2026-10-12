@@ -30,6 +30,15 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         }
         DebugLog.log("REPLY", "Receiver", "reply to $sessionKey: ${reply.take(60)}")
         NotificationHelper.cancelTurns(context, sessionKey)
+        // ntfy-rail replies (v0.1.87): session key "ntfy:<topic>" means post to
+        // the chat topic — the agent answers via the subscription notification.
+        val ntfyTopic = intent.getStringExtra(NotificationReplyService.EXTRA_NTFY_TOPIC)
+        if (sessionKey.startsWith("ntfy:") && ntfyTopic != null) {
+            val server = intent.getStringExtra(NotificationReplyService.EXTRA_NTFY_SERVER)
+                ?: NtfySubscriptionService.DEFAULT_SERVER
+            NotificationReplyService.startNtfy(context, server, ntfyTopic, title, reply)
+            return
+        }
         NotificationReplyService.start(context, sessionKey, title, reply)
     }
 }

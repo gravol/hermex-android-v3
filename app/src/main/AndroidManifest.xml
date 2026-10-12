@@ -56,6 +56,13 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- v0.1.87: native ntfy push subscription (docs/NATIVE_NTFY_DELIVERY_PLAN.md) -->
+        <service
+            android:name=".notify.NtfySubscriptionService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <receiver
             android:name=".notify.NotificationReplyReceiver"
             android:enabled="true"

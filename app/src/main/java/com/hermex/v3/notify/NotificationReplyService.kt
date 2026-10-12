@@ -54,12 +54,32 @@ class NotificationReplyService : Service() {
                 putExtra(EXTRA_SESSION_TITLE, title)
                 putExtra(EXTRA_REPLY_TEXT, reply)
             }
+            startInternal(context, intent)
+        }
+
+        /** ntfy-rail reply (v0.1.87): publish to the chat topic; the agent's
+         *  answer arrives back as a subscription notification. */
+        fun startNtfy(context: Context, server: String, topic: String, title: String, reply: String) {
+            val intent = Intent(context, NotificationReplyService::class.java).apply {
+                putExtra(EXTRA_SESSION_ID, "ntfy:$topic")
+                putExtra(EXTRA_SESSION_TITLE, title)
+                putExtra(EXTRA_REPLY_TEXT, reply)
+                putExtra(EXTRA_NTFY_SERVER, server)
+                putExtra(EXTRA_NTFY_TOPIC, topic)
+            }
+            startInternal(context, intent)
+        }
+
+        private fun startInternal(context: Context, intent: Intent) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
             }
         }
+
+        const val EXTRA_NTFY_SERVER = "reply_service_ntfy_server"
+        const val EXTRA_NTFY_TOPIC = "reply_service_ntfy_topic"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -77,6 +97,24 @@ class NotificationReplyService : Service() {
         val safeTitle = intent?.getStringExtra(EXTRA_SESSION_TITLE) ?: safeSession
         // Foreground ASAP (5s window after startForegroundService).
         startForeground(NOTIFICATION_ID, NotificationHelper.postReplying(this, safeTitle))
+        if (safeSession.startsWith("ntfy:")) {
+            // ntfy-rail reply (v0.1.87): POST to the chat topic; the agent's
+            // answer arrives through the subscription as a new notification.
+            val topic = intent?.getStringExtra(EXTRA_NTFY_TOPIC) ?: "hermes-in"
+            val server = intent?.getStringExtra(EXTRA_NTFY_SERVER)
+                ?: NtfySubscriptionService.DEFAULT_SERVER
+            serviceScope.launch {
+                val ok = NtfyClient.publish(server, topic, safeReply)
+                DebugLog.log("REPLY", "Service", "ntfy publish to $topic: ok=$ok")
+                if (!ok) {
+                    NotificationHelper.postReplyFailed(
+                        this@NotificationReplyService, safeSession, safeTitle,
+                    )
+                }
+                stopSelf()
+            }
+            return START_NOT_STICKY
+        }
         serviceScope.launch {
             runReply(safeSession, safeTitle, safeReply)
         }

@@ -125,6 +125,17 @@ class SettingsRepository(context: Context) {
 
     suspend fun setPinnedSessionIds(ids: Set<String>) = store.setStringSet(KEY_PINNED_SESSIONS, ids)
 
+    // v0.1.87: native ntfy push delivery (docs/NATIVE_NTFY_DELIVERY_PLAN.md)
+    val ntfyEnabled: Flow<Boolean> = store.getBoolean(KEY_NTFY_ENABLED).map { it ?: true }
+    val ntfyServer: Flow<String> = store.getString(KEY_NTFY_SERVER).map { it ?: "" }
+    val ntfyTopics: Flow<String> = store.getString(KEY_NTFY_TOPICS).map { it ?: "" }
+    fun getNtfyLastId(topic: String): Flow<String?> = store.getString("ntfy_last_id:$topic")
+
+    suspend fun setNtfyEnabled(value: Boolean) = store.setBoolean(KEY_NTFY_ENABLED, value)
+    suspend fun setNtfyServer(value: String) = store.setString(KEY_NTFY_SERVER, value)
+    suspend fun setNtfyTopics(value: String) = store.setString(KEY_NTFY_TOPICS, value)
+    suspend fun setNtfyLastId(topic: String, id: String) = store.setString("ntfy_last_id:$topic", id)
+
     suspend fun togglePinned(sessionId: String) {
         val current = store.getStringSet(KEY_PINNED_SESSIONS).first()
         val next = if (sessionId in current) current - sessionId else current + sessionId
@@ -173,5 +184,8 @@ class SettingsRepository(context: Context) {
         const val KEY_PINNED_SESSIONS = "pinned_session_ids"
         const val KEY_MODEL_PICK = "model_pick"
         const val KEY_REASONING_PICK = "reasoning_pick"
+        const val KEY_NTFY_ENABLED = "ntfy_enabled"
+        const val KEY_NTFY_SERVER = "ntfy_server_url"
+        const val KEY_NTFY_TOPICS = "ntfy_topics_csv"
     }
 }

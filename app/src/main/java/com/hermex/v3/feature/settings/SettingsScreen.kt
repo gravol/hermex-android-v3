@@ -58,6 +58,7 @@ import com.hermex.core.network.NetworkResult
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -497,6 +498,86 @@ fun SettingsScreen(
                     checked = savedShowThinking,
                     onCheckedChange = { checked -> scope.launch { settingsRepo.setShowThinking(checked) } },
                 )
+            }
+
+            Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // v0.1.87: native ntfy push delivery (docs/NATIVE_NTFY_DELIVERY_PLAN.md)
+            Text("Push Delivery", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Hermex listens on your self-hosted ntfy server and posts cron/infra/background-session notices as Hermex notifications. Keep the defaults for the Hermes fleet.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val savedNtfy by settingsRepo.ntfyEnabled.collectAsState(initial = true)
+            val savedNtfyServer by settingsRepo.ntfyServer.collectAsState(initial = "")
+            val savedNtfyTopics by settingsRepo.ntfyTopics.collectAsState(initial = "")
+            var ntfyServerText by remember(savedNtfyServer) {
+                mutableStateOf(savedNtfyServer.ifBlank { com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_SERVER })
+            }
+            var ntfyTopicsText by remember(savedNtfyTopics) {
+                mutableStateOf(savedNtfyTopics.ifBlank { com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_TOPICS_CSV })
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Native notifications", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Pushes arrive as Hermex notifications (no ntfy app needed).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = savedNtfy,
+                    onCheckedChange = { checked ->
+                        scope.launch {
+                            settingsRepo.setNtfyEnabled(checked)
+                            if (checked) {
+                                com.hermex.v3.notify.NtfySubscriptionService.start(context)
+                            } else {
+                                com.hermex.v3.notify.NtfySubscriptionService.stop(context)
+                            }
+                        }
+                    },
+                )
+            }
+            OutlinedTextField(
+                value = ntfyServerText,
+                onValueChange = { ntfyServerText = it },
+                label = { Text("ntfy server") },
+                placeholder = { Text(com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_SERVER) },
+                singleLine = true,
+                enabled = savedNtfy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = ntfyTopicsText,
+                onValueChange = { ntfyTopicsText = it },
+                label = { Text("Topics (comma-separated)") },
+                placeholder = { Text(com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_TOPICS_CSV) },
+                singleLine = true,
+                enabled = savedNtfy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        settingsRepo.setNtfyServer(ntfyServerText.trim())
+                        settingsRepo.setNtfyTopics(ntfyTopicsText.trim())
+                        // Restart the subscription so it picks up the new config.
+                        com.hermex.v3.notify.NtfySubscriptionService.stop(context)
+                        if (settingsRepo.ntfyEnabled.first()) {
+                            com.hermex.v3.notify.NtfySubscriptionService.start(context)
+                        }
+                        Toast.makeText(context, "✓ Saved — reconnecting", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Save & Reconnect")
             }
 
             Divider(modifier = Modifier.padding(vertical = 8.dp))
