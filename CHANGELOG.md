@@ -1,3 +1,21 @@
+## v0.1.872 (vc18) — 2026-10-12
+- **Cron/alert pushes are now clickable.** Turn-finished pushes opened the session
+  because they carry `X-Click: hermex://session/<key>`; cron output and infra alerts
+  carry no click header, and `postNtfyMessage` set **no content intent** on that path —
+  tapping opened the app and stopped at whatever screen was already up.
+- Link-less pushes now get a content intent: `hermes-cron` topic → Cron screen,
+  everything else → session list. A server-published `hermex://route/<name>` click
+  overrides that. Routes are whitelisted (home/cron/skills/config/settings/soul) so an
+  unknown route cannot throw in `navigate()`. The app owns its routes — the server
+  never needs to learn them.
+- **Warm taps fixed**: the deep-link effect was keyed on `activity?.intent`, and
+  `setIntent()` triggers no recomposition, so cold starts navigated while taps made
+  while the app was already foreground did nothing. Keyed on a counter bumped in
+  `onNewIntent` instead.
+- Verified on Pixel 10a: cron-channel pushes carry a `contentIntent`
+  (`dumpsys notification`), cold start with `open_route=cron` lands on the Cron
+  screen, warm tap with `open_route=skills` lands on Skills & Tools.
+
 ## v0.1.871 (vc17) — 2026-10-12
 - **Native ntfy delivery actually works now.** v0.1.87's subscription invented a protocol
   ntfy does not implement, so it never delivered a single notification: it dialed `/ws`
