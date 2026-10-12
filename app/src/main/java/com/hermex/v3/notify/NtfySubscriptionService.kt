@@ -25,6 +25,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -33,23 +34,40 @@ import okhttp3.WebSocketListener
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
-import kotlin.random.Random
 
 /**
  * Native ntfy subscription (v0.1.87) — Hermex's own push-delivery rail.
  *
- * Hermex speaks the public ntfy WebSocket protocol directly and posts
+ * Hermex speaks the public ntfy subscription protocol directly and posts
  * notifications on its OWN channels: cron output, infra alerts, and
  * finished background sessions arrive as plain Hermex notifications, not
  * through the ntfy app.
  *
+ * Protocol facts (verified against ntfy 2.24 on BigRed, 2026-10-12 — the
+ * first cut of this file invented a protocol ntfy does not have):
+ *  - The WebSocket endpoint is `<topic>/ws`, one connection per topic list.
+ *    There is NO global `/ws`: that path serves the web app's SPA HTML, so a
+ *    handshake there answers HTTP 200 and OkHttp fails the upgrade.
+ *  - Multiple topics share one connection: `/<a>,<b>/ws` (comma-separated).
+ *  - Catch-up is the `?since=<id | unix-seconds | duration>` query param on
+ *    the upgrade URL. ntfy accepts NO client frames at all — a "subscribe"
+ *    or "catch-up" JSON frame is ignored by the server.
+ *  - Server->client frames carry `event` (open / message / keepalive /
+ *    poll_request), NOT `type`.
+ *  - Message ids are base64 snowflakes with a random component: NOT
+ *    lexicographically ordered and NOT numerically monotonic, so
+ *    `id <= lastId` is not a valid duplicate test. Order by `time` (unix
+ *    seconds) and de-dupe ids within the same second.
+ *  - The deep-link URL a notification opens lives in the `click` field
+ *    (published as the `X-Click` header). `Link` is the attachment URL field
+ *    and never reaches the message JSON.
+ *
  * Design (docs/NATIVE_NTFY_DELIVERY_PLAN.md):
  *  - foreground service (dataSync, like WsKeepaliveService) + persistent
  *    low-importance "Notifications connected" indicator (Android requires it)
- *  - subscribe frames + per-topic catch-up frames after every (re)connect;
- *    last-seen message ids persisted in DataStore — a socket death in Doze
- *    loses nothing, and the id filter kills every duplicate
- *  - message routing: link hermex://session/<key> -> postTurnFinished
+ *  - last-seen timestamp per topic persisted in DataStore — a socket death in
+ *    Doze replays from there, so nothing is missed
+ *  - message routing: click hermex://session/<key> -> postTurnFinished
  *    (opens the chat, carries the inline Reply action); everything else ->
  *    cron channel, or the loud alerts channel when priority >= 4
  *  - duplicate discipline with the app's live WS notifications: the server
@@ -69,11 +87,24 @@ class NtfySubscriptionService : Service() {
     private var destroyed = false
     private var serverUrl = DEFAULT_SERVER
     private var topicList = listOf("hermes-out", "hermes-sessions")
-    private val lastIds = HashMap<String, String>()
+
+    /** Newest delivered message time (unix seconds) per topic. */
+    private val lastTimes = HashMap<String, Long>()
+
+    /** Ids delivered at exactly [lastTimes] — kills same-second replay dupes. */
+    private val sameSecondIds = HashMap<String, MutableSet<String>>()
+
+    /** Replay floor for a topic with no persisted cursor (first run = live edge). */
+    private var seedTs = 0L
 
     companion object {
         const val DEFAULT_SERVER = "http://100.80.204.66:8080"
-        const val DEFAULT_TOPICS_CSV = "hermes-out,hermes-sessions"
+
+        // Every topic the BigRed side publishes to: hermes-out (gateway replies +
+        // cron deliver=ntfy), hermes-sessions (turn-finished), hermes-cron and
+        // hermes-alerts (hermes-ops notifier). A topic missing here is a silent
+        // delivery hole.
+        const val DEFAULT_TOPICS_CSV = "hermes-out,hermes-sessions,hermes-cron,hermes-alerts"
         private const val NOTIFICATION_ID = 8090
         private const val CHANNEL_ID = "ntfy_connection"
 
@@ -123,31 +154,35 @@ class NtfySubscriptionService : Service() {
             .split(",")
             .map { it.trim() }
             .filter { it.isNotBlank() }
-            .ifEmpty { listOf("hermes-out", "hermes-sessions") }
+            .ifEmpty { DEFAULT_TOPICS_CSV.split(",") }
+        // First run: start at the live edge so cached history never floods in.
+        seedTs = System.currentTimeMillis() / 1000
         for (t in topicList) {
-            // First run: seed at the live edge so history never floods in.
-            lastIds[t] = settings.getNtfyLastId(t).first() ?: snowflakeNow()
+            lastTimes[t] = settings.getNtfyLastTs(t).first() ?: seedTs
+            sameSecondIds[t] = mutableSetOf()
         }
         connect()
     }
 
     private fun connect() {
         if (destroyed) return
-        DebugLog.log("NTFY", "Sub", "connecting $serverUrl topics=$topicList")
-        val c = client
-        val wsUrl = serverUrl.replace("http://", "ws://")
-        ws = c.newWebSocket(
-            Request.Builder().url("$wsUrl/ws").build(),
+        val scheme = if (serverUrl.startsWith("https://")) "wss://" else "ws://"
+        val host = serverUrl
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .trimEnd('/')
+        val topics = topicList.joinToString(",")
+        // One replay floor for the shared connection: the oldest cursor wins,
+        // the per-topic time/id filter discards anything already delivered.
+        val since = (lastTimes.values.minOrNull() ?: seedTs) - 1
+        val url = "$scheme$host/$topics/ws?since=$since"
+        DebugLog.log("NTFY", "Sub", "connecting $url")
+        ws = client.newWebSocket(
+            Request.Builder().url(url).build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    DebugLog.log("NTFY", "Sub", "connected")
+                    DebugLog.log("NTFY", "Sub", "connected (topics=$topics since=$since)")
                     backoffMs = 5_000L
-                    for (t in topicList) {
-                        webSocket.send("""{"type":"subscribe","topic":"$t"}""")
-                        webSocket.send(
-                            """{"type":"catch-up","topic":"$t","id":"${lastIds[t]}"}""",
-                        )
-                    }
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
@@ -183,33 +218,34 @@ class NtfySubscriptionService : Service() {
     private fun handleFrame(text: String) {
         try {
             val obj = json.parseToJsonElement(text).jsonObject
-            val type = obj["type"]?.jsonPrimitive?.contentOrNull ?: return
-            if (type != "message") return // keepalive / welcome frames
+            val event = obj["event"]?.jsonPrimitive?.contentOrNull ?: return
+            if (event != "message") return // open / keepalive / poll_request
             val topic = obj["topic"]?.jsonPrimitive?.contentOrNull ?: return
             if (topic !in topicList) return
             val msgId = obj["id"]?.jsonPrimitive?.contentOrNull ?: return
-            val prev = lastIds[topic] ?: return
-            if (msgId <= prev) return // duplicate (catch-up replay) — drop
-            lastIds[topic] = msgId
+            val msgTs = obj["time"]?.jsonPrimitive?.long
+                ?: (System.currentTimeMillis() / 1000)
+            val prev = lastTimes[topic] ?: seedTs
+            // Ids are not order-comparable; time is. Replay of an older second
+            // is stale, and a same-second replay is a duplicate.
+            if (msgTs < prev) return
+            if (msgTs == prev && sameSecondIds[topic]?.contains(msgId) == true) return
+            lastTimes[topic] = msgTs
+            sameSecondIds[topic] =
+                if (msgTs == prev) (sameSecondIds[topic] ?: mutableSetOf()).apply { add(msgId) }
+                else mutableSetOf(msgId)
             scope.launch {
-                SettingsRepository(applicationContext).setNtfyLastId(topic, msgId)
+                SettingsRepository(applicationContext).setNtfyLastTs(topic, msgTs)
             }
             val title = obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val body = obj["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
-            val link = obj["link"]?.jsonPrimitive?.contentOrNull
+            val click = obj["click"]?.jsonPrimitive?.contentOrNull
             val priority = obj["priority"]?.jsonPrimitive?.int ?: 3
-            NotificationHelper.postNtfyMessage(this, topic, msgId, title, body, link, priority)
+            NotificationHelper.postNtfyMessage(this, topic, msgId, title, body, click, priority)
             DebugLog.log("NTFY", "Sub", "posted topic=$topic id=$msgId title=${title.take(40)}")
         } catch (e: Exception) {
             DebugLog.log("NTFY", "Sub", "frame parse failed: ${e.message} :: ${text.take(120)}")
         }
-    }
-
-    /** Legacy-format snowflake id for the current instant (time-sortable). */
-    private fun snowflakeNow(): String {
-        val chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-"
-        return "%016d".format(System.currentTimeMillis() * 1000) +
-            (0 until 2).map { chars[Random.nextInt(chars.length)] }.joinToString("")
     }
 
     private fun createConnChannel() {

@@ -131,10 +131,17 @@ class SettingsRepository(context: Context) {
     val ntfyTopics: Flow<String> = store.getString(KEY_NTFY_TOPICS).map { it ?: "" }
     fun getNtfyLastId(topic: String): Flow<String?> = store.getString("ntfy_last_id:$topic")
 
+    /** Replay cursor: newest delivered message `time` (unix seconds) per topic. */
+    fun getNtfyLastTs(topic: String): Flow<Long?> =
+        store.getString("ntfy_last_ts:$topic").map { it?.toLongOrNull() }
+
     suspend fun setNtfyEnabled(value: Boolean) = store.setBoolean(KEY_NTFY_ENABLED, value)
     suspend fun setNtfyServer(value: String) = store.setString(KEY_NTFY_SERVER, value)
     suspend fun setNtfyTopics(value: String) = store.setString(KEY_NTFY_TOPICS, value)
     suspend fun setNtfyLastId(topic: String, id: String) = store.setString("ntfy_last_id:$topic", id)
+
+    suspend fun setNtfyLastTs(topic: String, ts: Long) =
+        store.setString("ntfy_last_ts:$topic", ts.toString())
 
     suspend fun togglePinned(sessionId: String) {
         val current = store.getStringSet(KEY_PINNED_SESSIONS).first()
