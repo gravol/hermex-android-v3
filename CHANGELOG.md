@@ -1,3 +1,18 @@
+## v0.1.87 (vc16) — 2026-10-12
+- **Native ntfy push delivery**: Hermex speaks the ntfy WebSocket protocol itself.
+  Cron output, infra alerts, and finished background sessions arrive as plain Hermex
+  notifications (own channels, own tap behavior, inline reply) — no ntfy app needed.
+  Foreground subscription service with per-topic catch-up (Doze-safe, idempotent by
+  ntfy message id). `hermex://session/<key>` links open the chat (shares the live
+  turn-notification id, so a late server push replaces, never doubles). Settings →
+  Push Delivery: enable, server, topics. Plan + full revert map:
+  docs/NATIVE_NTFY_DELIVERY_PLAN.md.
+- **Notification watchers gutted** (phase A, 259b796, −595 lines): CronWatcher,
+  TurnWatcher 90s alarm, both alarm receivers, manifest entries, alarm/boot permissions.
+  Revert: `git revert d89ef84 259b796` (tag pre-ntfy-native = full rollback).
+- Kept on purpose: the app's live WS turn/approval notifications (they know screen
+  visibility; the server suppresses pushes for watched sessions via leases).
+
 ## v0.1.86 (vc15) — 2026-10-08
 - Build fix: DebugLog.kt had a duplicate `isLevelEnabled` (added in the v0.1.85 level work) —
   Kotlin `Conflicting overloads` broke `:core:network:compileReleaseKotlin`, so v0.1.85 never
