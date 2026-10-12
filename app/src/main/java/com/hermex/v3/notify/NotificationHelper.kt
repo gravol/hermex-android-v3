@@ -149,7 +149,7 @@ object NotificationHelper {
             .addAction(replyAction(context, sessionKey, title))
             .build()
         runCatching { NotificationManagerCompat.from(context).notify(turnNotificationId(sessionKey), notification) }
-        DebugLog.log("NOTIF", "TurnWatcher", "postTurnFinished posted for $sessionKey (title=$title)")
+        DebugLog.log("NOTIF", "Notify", "postTurnFinished posted for $sessionKey (title=$title)")
     }
 
     /** Foreground notification while NotificationReplyService submits a reply (v0.1.98). */

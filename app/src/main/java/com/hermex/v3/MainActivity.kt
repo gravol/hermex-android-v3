@@ -38,7 +38,6 @@ import com.hermex.v3.feature.system.ConfigScreen
 import com.hermex.v3.feature.system.CronScreen
 import com.hermex.v3.feature.system.SkillDetailScreen
 import com.hermex.v3.feature.system.SkillsScreen
-import com.hermex.v3.notify.CronWatcher
 import com.hermex.v3.notify.NotificationHelper
 import com.hermex.core.network.DashboardApiClient
 import com.hermex.core.network.DebugLog
@@ -52,8 +51,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // v0.1.74: arm the scheduled-alarm cron watcher + ensure channels exist
-        CronWatcher.sync(this)
+        // Notification channels (turn-finished/cron/approval/reply)
         NotificationHelper.ensureChannels(this)
         // Android 13+ needs a runtime grant for notifications
         if (Build.VERSION.SDK_INT >= 33 &&

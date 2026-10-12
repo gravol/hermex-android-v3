@@ -26,7 +26,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.hermex.v3.notify.CronWatcher
 import com.hermex.core.network.DashboardApiClient
 import com.hermex.core.network.NetworkResult
 import kotlinx.coroutines.launch
@@ -53,11 +52,6 @@ fun CronScreen(onBack: () -> Unit) {
                 is NetworkResult.HttpError -> error = "Server error (${r.code})"
                 is NetworkResult.Error -> error = r.exception.message
             }
-            // v0.1.82: viewing the cron list re-arms the alarm watcher. Jobs
-            // created elsewhere (API/Telegram/desktop) arm here — previously
-            // only a chat connect did, so a job created while the app was
-            // closed never got an alarm (the 1-min test that didn't ping).
-            CronWatcher.sync(context)
         }
     }
     LaunchedEffect(Unit) { load() }
@@ -99,8 +93,6 @@ fun CronScreen(onBack: () -> Unit) {
                             editorJob = null
                             showCreate = false
                             load()
-                            // Re-arm alarm watcher with the new schedule
-                            CronWatcher.sync(context)
                         },
                     )
                 }
@@ -154,7 +146,6 @@ fun CronScreen(onBack: () -> Unit) {
                                             is NetworkResult.Success -> {
                                                 Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
                                                 load()
-                                                CronWatcher.sync(context)
                                             }
                                             is NetworkResult.HttpError ->
                                                 Toast.makeText(context, "Server error (${r.code})", Toast.LENGTH_SHORT).show()
