@@ -142,7 +142,12 @@ fun ChatScreen(
 
     // Report screen visibility so the VM can flag turns that finish while the
     // user is away (background turns — v0.1.60).
-    DisposableEffect(Unit) {
+    // v0.1.874: keyed on sessionId. With key=Unit this ran ONCE, on first
+    // composition — i.e. BEFORE LaunchedEffect(sessionId) had populated
+    // sessionId (it starts empty), and it never re-ran when the session
+    // changed. AppState.visibleSessionId therefore stayed "" forever and the
+    // quiet-channel guard never matched.
+    DisposableEffect(sessionId) {
         viewModel.setScreenVisible(true)
         onDispose { viewModel.setScreenVisible(false) }
     }

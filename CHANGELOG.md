@@ -1,3 +1,23 @@
+## v0.1.874 (vc20) — 2026-10-13
+- **Turn notifications no longer ping the chat you're already looking at.** A
+  finished turn in the visible session now posts to a new silent channel
+  (`turns_quiet`, IMPORTANCE_LOW, `setSound(null)`, no vibration, no badge) with
+  `flags=SILENT` — the card lands in the shade with its Reply action intact, and
+  the phone makes no sound, no vibration, no heads-up. Same notification id, so
+  the loud push that arrives when you background the app replaces the quiet one.
+- Suppression was the wrong answer and was reverted in the same commit: the
+  turn-finished notification is the inline-reply affordance, so killing it kills
+  lock-screen/shade reply. Silence, not absence.
+- **Fixed: `AppState.visibleSessionId` was always empty.** `ChatScreen`'s
+  `DisposableEffect(Unit)` ran `setScreenVisible(true)` once at first composition
+  — before `LaunchedEffect(sessionId)` had populated the VM's `sessionId` (starts
+  `""`) — and with key `Unit` never re-ran on session change. `init()` now
+  re-publishes the key when the screen is visible, and the effect is keyed on
+  `sessionId`.
+- Server-side (`hermes-ops/app/turnwatch.py`): lease freshness now measured
+  against `expires_at`, not `acquired_at`. A turn lease is acquired at turn START
+  and refreshed while held, so `acquired_at` ages by the whole turn (real turns
+  here run 350-880s) and a viewer of a long turn looked "stale, nobody watching".
 ## v0.1.873 (vc19) — 2026-10-12
 - Version bump only, to ship the warm-tap deep-link fix. v0.1.872's tag landed on
   `d479f92`; the warm-tap commit arrived with the tag already present, so CI's

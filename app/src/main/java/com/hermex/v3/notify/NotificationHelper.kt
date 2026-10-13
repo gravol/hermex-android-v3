@@ -36,6 +36,7 @@ import java.net.URLEncoder
 object NotificationHelper {
 
     const val CHANNEL_TURNS = "turns"
+    const val CHANNEL_TURNS_QUIET = "turns_quiet"
     const val CHANNEL_CRON = "cron"
     const val CHANNEL_ALERTS = "alerts"
     const val CHANNEL_REPLY = "reply"
@@ -81,6 +82,19 @@ object NotificationHelper {
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_REPLY, "Replying", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Foreground indicator while an inline notification reply is being sent"
+                setShowBadge(false)
+            }
+        )
+        // v0.1.874: a turn that finishes in the chat you are LOOKING AT is not
+        // news, so it must not ping. It is still the inline-reply affordance, so
+        // it must not be suppressed either. A silent channel is the only shape
+        // that satisfies both: the card lands in the shade with the Reply
+        // action, and the phone makes no sound and no vibration.
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_TURNS_QUIET, "Turn finished (quiet)", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Turns that finished in the chat you were already looking at"
+                setSound(null, null)
+                enableVibration(false)
                 setShowBadge(false)
             }
         )
@@ -158,21 +172,28 @@ object NotificationHelper {
      * when it fired. This is what made approval requests reliably noticed and
      * turn-finished notifications effectively silent. */
     fun postTurnFinished(context: Context, sessionKey: String, sessionTitle: String, preview: String) {
+        // v0.1.874: a turn that finishes in the chat you are LOOKING AT must not
+        // ping — the answer is already rendering in front of you. It is NOT
+        // suppressed, because this notification is the inline-reply affordance
+        // (Reply action, lock-screen/shade reply loop). Silent channel = card in
+        // the shade, no sound, no vibration, no heads-up popup.
+        val watching = com.hermex.v3.AppState.isWatching(sessionKey)
         ensureChannels(context)
         val title = sessionTitle.ifBlank { "Hermes" }
         val text = preview.take(200).ifBlank { "Turn finished" }
-        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS)
+        val notification = NotificationCompat.Builder(context, if (watching) CHANNEL_TURNS_QUIET else CHANNEL_ALERTS)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(if (watching) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
+            .apply { if (watching) setSilent(true) }
             .setContentIntent(openSessionIntent(context, sessionKey, title))
             .addAction(replyAction(context, sessionKey, title))
             .build()
         runCatching { NotificationManagerCompat.from(context).notify(turnNotificationId(sessionKey), notification) }
-        DebugLog.log("NOTIF", "Notify", "postTurnFinished posted for $sessionKey (title=$title)")
+        DebugLog.log("NOTIF", "Notify", "postTurnFinished posted for $sessionKey (title=$title, quiet=$watching)")
     }
 
     /** Foreground notification while NotificationReplyService submits a reply (v0.1.98). */

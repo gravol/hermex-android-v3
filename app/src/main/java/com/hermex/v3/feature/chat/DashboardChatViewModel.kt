@@ -165,6 +165,15 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         this.turnNotifPosted = false
         this.sessionTitle = title ?: sessionId.take(16)
         uiState = ChatUiState(sessionTitle = this.sessionTitle)
+        // v0.1.874: publish the watched session HERE too. ChatScreen's
+        // DisposableEffect(setScreenVisible) runs synchronously at composition,
+        // i.e. BEFORE LaunchedEffect's coroutine reaches init(), so at that
+        // moment this.sessionId is still "" and visibleSessionId gets "".
+        // init() is where the key actually exists — re-publish if the screen
+        // is already visible.
+        if (screenVisible) {
+            com.hermex.v3.AppState.visibleSessionId = sessionId
+        }
         DebugLog.log("STATE", "SessionID",
             "init() — sessionId ASSIGNED: old=$oldSid new=$sessionId (DB key) title=$sessionTitle")
         connectWsAndStart()
@@ -2092,6 +2101,15 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
 
     override fun setScreenVisible(visible: Boolean) {
         screenVisible = visible
+        // v0.1.874: publish the watched session so notification paths can skip
+        // "turn finished" pings for the very chat the user is looking at.
+        // Clear ONLY our own key: several chat VMs exist (one per open chat),
+        // and a hidden VM's onDispose(false) must not wipe the visible VM's key.
+        if (visible) {
+            com.hermex.v3.AppState.visibleSessionId = sessionId
+        } else if (com.hermex.v3.AppState.visibleSessionId == sessionId) {
+            com.hermex.v3.AppState.visibleSessionId = ""
+        }
         // If the turn finished while away, the banner shows on re-entry
         if (visible && uiState.completedWhileAway) {
             DebugLog.log("RPC", "DashboardChat", "re-entered chat — completedWhileAway banner shown")
