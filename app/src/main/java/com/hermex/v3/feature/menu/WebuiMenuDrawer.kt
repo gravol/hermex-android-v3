@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.ChatBubble
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Handyman
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
@@ -96,6 +97,12 @@ fun WebuiMenuDrawer(
                             label = "Skills",
                             selected = panel == "skills",
                             onClick = { panel = "skills" },
+                        )
+                        RailButton(
+                            icon = { Icons.Outlined.Computer },
+                            label = "Screen",
+                            selected = false,
+                            onClick = { onNavigate("botscreen") },
                         )
                         Spacer(Modifier.weight(1f))
                         RailButton(

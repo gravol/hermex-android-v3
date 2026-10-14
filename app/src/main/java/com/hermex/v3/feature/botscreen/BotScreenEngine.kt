@@ -69,10 +69,19 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
     private val wsConnection = WsConnectionManager(viewModelScope)
     private val rpc = JsonRpcClient(wsConnection, viewModelScope)
 
+    // No pingInterval: the bridge answers RFB frames, not WS control frames, and OkHttp
+    // fails the socket after one unanswered ping ("didn't receive pong within 20000ms").
+    // Liveness is proven by the 400 ms update-request / frame traffic in startPolling().
     private val http = OkHttpClient.Builder()
-        .pingInterval(20, TimeUnit.SECONDS)
+        .pingInterval(0, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+
+    // Re-entrance guard. The pane's LaunchedEffect re-fires whenever the main WS reconnects
+    // and re-enters the route; a second connect() used to mint a second ticket and its
+    // disconnect() closed the FIRST, healthy display socket.
+    private var sessionActive = false
+    private var wsBytes = 0L
 
     private var displayWs: WebSocket? = null
     private var rfb: RfbClient? = null
@@ -83,7 +92,10 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
     // ── lifecycle ──────────────────────────────────────────────────
 
     fun connect() {
-        if (state != State.Idle && state !is State.Error) return
+        // Idempotent: a live (or starting) session is never restarted. Every path that ends a
+        // session — disconnect(), a failed handshake, a dead rfb run — clears sessionActive.
+        if (sessionActive) return
+        sessionActive = true
         state = State.Connecting
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -112,6 +124,7 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 openDisplaySocket()
             } catch (e: Exception) {
                 DebugLog.log("INFO", "BOT", "connect failed: ${e.message}")
+                sessionActive = false
                 state = State.Error(e.message ?: "connect failed")
             }
         }
@@ -135,6 +148,11 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
+                wsBytes += bytes.size
+                if (wsBytes == bytes.size.toLong()) {
+                    // First server→client payload = the RFB ServerVersion greeting.
+                    DebugLog.log("INFO", "BOT", "display ws first bytes: ${bytes.size}")
+                }
                 client.feed(bytes.toByteArray())
             }
 
@@ -142,8 +160,15 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 DebugLog.log("INFO", "BOT", "display ws closing: $code $reason")
             }
 
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                DebugLog.log("INFO", "BOT", "display ws closed: $code $reason")
+                client.closePipe()
+            }
+
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 DebugLog.log("INFO", "BOT", "display ws failure: ${t.message}")
+                client.closePipe()
+                sessionActive = false
                 viewModelScope.launch { state = State.Error("display ws: ${t.message}") }
             }
         })
@@ -152,9 +177,12 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
         runJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 client.run()
+                sessionActive = false
+                DebugLog.log("INFO", "BOT", "rfb session ended: ${client.lastError ?: "clean"}")
                 withContextMain { state = State.Error("rfb session ended") }
             } catch (e: Exception) {
                 DebugLog.log("INFO", "BOT", "rfb run failed: ${e.message}")
+                sessionActive = false
                 withContextMain { state = State.Error(e.message ?: "rfb failed") }
             }
         }
@@ -170,6 +198,9 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 return
             }
         }
+        DebugLog.log("INFO", "BOT", "rfb handshake timeout (wsBytes=$wsBytes, err=${client.lastError})")
+        client.closePipe()
+        sessionActive = false
         withContextMain { state = State.Error("rfb handshake timeout") }
     }
 
@@ -190,12 +221,17 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnect() {
+        sessionActive = false
+        wsBytes = 0
+        // Unblock the parser first: run() parks in read(), so cancelling the job alone
+        // would leave it spinning until its read budget expires.
+        rfb?.closePipe()
         pollJob?.cancel(); runJob?.cancel()
         displayWs?.close(1000, null)
         displayWs = null
         rfb = null
-        rpc.stop()
-        wsConnection.disconnect()
+        // The main gateway WS (wsConnection) is SHARED with chat/sessions — never tear it
+        // down here. Closing Bot Screen must not disconnect the app's main connection.
         state = State.Idle
     }
 

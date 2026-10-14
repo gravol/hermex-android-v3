@@ -56,6 +56,19 @@ class RfbClient(
     private val inbox = ConcurrentLinkedQueue<ByteArray>()
     private var carry = ByteArray(0)
 
+    /** Set by the engine when the WebSocket really closes — the ONLY thing that ends a read. */
+    @Volatile private var pipeClosed = false
+
+    /** Per-read budget: the greeting arrives the instant the bridge opens Xvnc's socket, so a
+     *  silent pipe for this long means the link is dead, not merely slow. */
+    private val readBudgetNs = 20L * 1_000_000_000
+
+    /** Why run() ended — surfaced in the debug export by the engine. */
+    @Volatile var lastError: String? = null
+        private set
+
+    fun closePipe() { pipeClosed = true }
+
     /** Feed one binary WebSocket frame (or socket read) into the parser. */
     fun feed(bytes: ByteArray) {
         inbox.add(bytes)
@@ -72,7 +85,11 @@ class RfbClient(
             connected = true
             requestFullUpdate()
             loop()
+        } catch (e: java.util.concurrent.CancellationException) {
+            lastError = "cancelled"
+            throw e
         } catch (e: Exception) {
+            lastError = e.message
             Log.d(TAG, "run ended: ${e.message}")
         } finally {
             connected = false
@@ -359,9 +376,21 @@ class RfbClient(
     private fun read(n: Int): ByteArray {
         val out = ByteArray(n)
         var pos = 0
+        val start = System.nanoTime()
         while (pos < n) {
             if (carry.isEmpty()) {
-                val next = inbox.poll() ?: throw EOFException("rfb pipe closed")
+                val next = inbox.poll()
+                if (next == null) {
+                    // An empty queue is NOT a closed pipe: WS frames arrive on OkHttp's reader
+                    // thread, so the greeting can lag this poll by milliseconds. The old code
+                    // threw EOF here, killing the handshake before byte 1 ever landed.
+                    if (pipeClosed) throw EOFException("rfb pipe closed")
+                    if (System.nanoTime() - start > readBudgetNs) {
+                        throw EOFException("no rfb bytes for ${readBudgetNs / 1_000_000_000}s (wanted $n)")
+                    }
+                    Thread.sleep(2)
+                    continue
+                }
                 carry = next
             }
             val take = minOf(n - pos, carry.size)

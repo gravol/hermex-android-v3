@@ -15,7 +15,14 @@ class RfbClientTest {
         val out = mutableListOf<ByteArray>()
         val client = RfbClient { bytes -> out.add(bytes) }
 
-        fun feed(vararg chunks: ByteArray) { chunks.forEach { client.feed(it) } }
+        /** Feed the whole server stream, then close it: run() ends on EOF, as on a real socket. */
+        fun feed(vararg chunks: ByteArray) {
+            chunks.forEach { client.feed(it) }
+            client.closePipe()
+        }
+
+        /** Feed without closing — for the late-arrival test. */
+        fun feedOpen(vararg chunks: ByteArray) { chunks.forEach { client.feed(it) } }
 
         /** All bytes the client has sent, concatenated. */
         fun sent(): ByteArray = out.fold(ByteArray(0)) { acc, b -> acc + b }
@@ -60,6 +67,22 @@ class RfbClientTest {
         assertEquals("SetPixelFormat type", 0, sent[14].toInt())
         assertEquals("bpp 32", 32, sent[18].toInt())
         assertEquals("SetEncodings type", 2, sent[34].toInt())
+    }
+
+    @Test fun handshake_waits_for_late_bytes() {
+        // The bridge opens Xvnc's socket on connect, so the greeting lands a few ms AFTER
+        // run() starts. The old parser threw EOF on the first empty poll — this is the
+        // regression test for "display ws opens, zero bytes, handshake timeout".
+        val p = Pipe()
+        val t = Thread { p.client.run() }
+        t.start()
+        Thread.sleep(400)
+        p.feedOpen(*handshakeBytes().toTypedArray())
+        Thread.sleep(400)
+        assertTrue("handshake survived the empty-queue window", p.client.connected)
+        assertEquals(4, p.client.width)
+        p.client.closePipe()
+        t.join(5_000)
     }
 
     private fun fbUpdate(vararg rects: ByteArray): ByteArray {
