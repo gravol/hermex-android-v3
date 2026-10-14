@@ -29,6 +29,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.hermex.v3.feature.chat.ChatScreen
 import com.hermex.v3.feature.chat.ChatVmsHolder
+import com.hermex.v3.feature.botscreen.BotScreenScreen
 import com.hermex.v3.feature.onboarding.DashboardSetupScreen
 import com.hermex.v3.feature.sessions.SessionsScreen
 import com.hermex.v3.feature.settings.SettingsRepository
@@ -226,6 +227,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                 },
                 activeSessions = chatVmsHolder.activeSessions,
                 onOpenCron = { navController.navigate("cron") },
+                onOpenBotScreen = { navController.navigate("botscreen") },
                 onOpenSkills = { navController.navigate("skills") },
                 onOpenConfig = { navController.navigate("config") },
             )
@@ -242,6 +244,11 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
         }
         composable("cron") {
             CronScreen(
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable("botscreen") {
+            BotScreenScreen(
                 onBack = { navController.popBackStack() },
             )
         }

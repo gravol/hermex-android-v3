@@ -20,6 +20,13 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        unitTests {
+            // RfbClient calls android.util.Log; JVM tests need it to no-op.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -36,4 +43,6 @@ dependencies {
 
     // AndroidX Security Crypto (encrypted cookie storage)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    testImplementation("junit:junit:4.13.2")
 }

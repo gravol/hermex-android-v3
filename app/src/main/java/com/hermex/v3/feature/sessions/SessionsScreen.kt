@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
@@ -72,6 +73,7 @@ fun SessionsScreen(
     onSettings: () -> Unit = {},
     activeSessions: StateFlow<Map<String, Boolean>> = MutableStateFlow(emptyMap()),
     onOpenCron: () -> Unit = {},
+    onOpenBotScreen: () -> Unit = {},
     onOpenSkills: () -> Unit = {},
     onOpenConfig: () -> Unit = {},
     viewModel: SessionsViewModel = viewModel(),
@@ -303,6 +305,16 @@ fun SessionsScreen(
                         modifier = Modifier.clickable {
                             scope.launch { drawerState.close() }
                             onOpenCron()
+                        },
+                    )
+                    ListItem(
+                        headlineContent = { Text("Bot Screen") },
+                        leadingContent = {
+                            Icon(Icons.Outlined.Computer, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            scope.launch { drawerState.close() }
+                            onOpenBotScreen()
                         },
                     )
                     ListItem(

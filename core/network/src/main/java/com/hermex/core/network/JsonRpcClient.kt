@@ -697,6 +697,34 @@ class JsonRpcClient(
     suspend fun sessionSteer(sessionId: String, text: String): JsonObject =
         request("session.steer", mapOf("session_id" to sessionId, "text" to text))
 
+    // ── Bot Screen (v0.22.0 display.* methods) ────────────────────
+
+    /** Runtime + lease snapshot of this profile's Bot Desktop. */
+    suspend fun displayStatus(): JsonObject = request("display.status")
+
+    /** Boot the Bot Desktop (Xvnc/Xfce) on the gateway host. */
+    suspend fun displayStart(): JsonObject = request("display.start", timeoutMs = 60_000)
+
+    /** Tear down the Bot Desktop. `force` overrides a human's lease. */
+    suspend fun displayStop(force: Boolean = false): JsonObject =
+        request("display.stop", mapOf("force" to force))
+
+    /**
+     * Mint a single-use 30 s ticket for `/api/display/ws` (raw RFB over
+     * WebSocket). Returns `{ticket, path, viewer_id, …}`. Redeem fast —
+     * the ticket dies in 30 s.
+     */
+    suspend fun displayObserve(viewerId: String = ""): JsonObject =
+        request("display.observe", if (viewerId.isEmpty()) emptyMap() else mapOf("viewer_id" to viewerId))
+
+    /** Take over: acquire the input lease as `viewerId` (from displayObserve). */
+    suspend fun displayLeaseAcquire(viewerId: String): JsonObject =
+        request("display.lease.acquire", mapOf("viewer_id" to viewerId))
+
+    /** Hand back: release the input lease. */
+    suspend fun displayLeaseRelease(viewerId: String): JsonObject =
+        request("display.lease.release", mapOf("viewer_id" to viewerId))
+
     suspend fun sessionResume(sessionId: String, omitMessages: Boolean = false): SessionResumeResult {
         DebugLog.log("STATE", "SessionID",
             "sessionResume called with sessionId=$sessionId omitMessages=$omitMessages")
