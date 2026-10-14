@@ -1,3 +1,10 @@
+## v0.1.875 (vc21) — 2026-10-14
+- **Copy a URL out of a message without copying the whole message.** The
+  long-press Reply/Copy dialog now detects every `http(s)://` URL in the message
+  and lists each one with its own **Copy link** button. The existing **Copy**
+  button still copies the full message. Fixes the "I just wanted the APK link"
+  annoyance.
+
 ## v0.1.874 (vc20) — 2026-10-13
 - **Turn notifications no longer ping the chat you're already looking at.** A
   finished turn in the visible session now posts to a new silent channel

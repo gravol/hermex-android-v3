@@ -1403,12 +1403,38 @@ fun ChatScreen(
             onDismissRequest = { replyTarget = null },
             title = { Text("Message") },
             text = {
-                Text(
-                    text = replyText.take(300).ifBlank { "(tool activity)" },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 8,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Column {
+                    Text(
+                        text = replyText.take(300).ifBlank { "(tool activity)" },
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 8,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    // Copy just a URL out of the message (v0.1.875)
+                    val urls = remember(replyText) {
+                        Regex("https?://[^\\s)\"'<>]+").findAll(replyText)
+                            .map { it.value }.toList().distinct()
+                    }
+                    if (urls.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        urls.forEach { u ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    u,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = {
+                                    val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cb.setPrimaryClip(ClipData.newPlainText("link", u))
+                                    Toast.makeText(context, "Link copied", Toast.LENGTH_SHORT).show()
+                                }) { Text("Copy link") }
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
