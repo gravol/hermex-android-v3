@@ -95,7 +95,7 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 var status = rpc.displayStatus()
                 val running = status["running"]?.jsonPrimitive?.content?.toBoolean() == true
                 if (!running) {
-                    DebugLog.log("BOT", "Screen", "display.start …")
+                    DebugLog.log("INFO", "BOT", "display.start …")
                     rpc.displayStart()
                     // Xvnc + Xfce need a moment to come up
                     repeat(10) {
@@ -111,7 +111,7 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
 
                 openDisplaySocket()
             } catch (e: Exception) {
-                DebugLog.log("BOT", "Screen", "connect failed: ${e.message}")
+                DebugLog.log("INFO", "BOT", "connect failed: ${e.message}")
                 state = State.Error(e.message ?: "connect failed")
             }
         }
@@ -124,14 +124,14 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
         viewerId = obs["viewer_id"]?.jsonPrimitive?.content ?: ""
         val url = DashboardApiClient.wsBaseUrl().trimEnd('/') +
             "/api/display/ws?display_ticket=$ticket"
-        DebugLog.log("BOT", "Screen", "opening display ws (viewer=$viewerId)")
+        DebugLog.log("INFO", "BOT", "opening display ws (viewer=$viewerId)")
 
         val client = RfbClient { bytes -> displayWs?.send(okio.ByteString.of(*bytes)) }
         rfb = client
         val request = Request.Builder().url(url).build()
         displayWs = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                DebugLog.log("BOT", "Screen", "display ws open")
+                DebugLog.log("INFO", "BOT", "display ws open")
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
@@ -139,11 +139,11 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                DebugLog.log("BOT", "Screen", "display ws closing: $code $reason")
+                DebugLog.log("INFO", "BOT", "display ws closing: $code $reason")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                DebugLog.log("BOT", "Screen", "display ws failure: ${t.message}")
+                DebugLog.log("INFO", "BOT", "display ws failure: ${t.message}")
                 viewModelScope.launch { state = State.Error("display ws: ${t.message}") }
             }
         })
@@ -154,7 +154,7 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 client.run()
                 withContextMain { state = State.Error("rfb session ended") }
             } catch (e: Exception) {
-                DebugLog.log("BOT", "Screen", "rfb run failed: ${e.message}")
+                DebugLog.log("INFO", "BOT", "rfb run failed: ${e.message}")
                 withContextMain { state = State.Error(e.message ?: "rfb failed") }
             }
         }
@@ -213,7 +213,7 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 leaseHolder = viewerId
                 if (state == State.Streaming) state = State.Takeover
             } catch (e: Exception) {
-                DebugLog.log("BOT", "Screen", "takeover failed: ${e.message}")
+                DebugLog.log("INFO", "BOT", "takeover failed: ${e.message}")
             }
         }
     }
@@ -225,7 +225,7 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 leaseHolder = null
                 if (state == State.Takeover) state = State.Streaming
             } catch (e: Exception) {
-                DebugLog.log("BOT", "Screen", "handback failed: ${e.message}")
+                DebugLog.log("INFO", "BOT", "handback failed: ${e.message}")
             }
         }
     }
