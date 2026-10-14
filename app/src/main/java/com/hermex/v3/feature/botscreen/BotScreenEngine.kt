@@ -180,8 +180,12 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
                 sessionActive = false
                 DebugLog.log("INFO", "BOT", "rfb session ended: ${client.lastError ?: "clean"}")
                 withContextMain { state = State.Error("rfb session ended") }
-            } catch (e: Exception) {
-                DebugLog.log("INFO", "BOT", "rfb run failed: ${e.message}")
+            } catch (e: java.util.concurrent.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Throwable, not Exception: a parser bug must never take the app down with
+                // it (an OutOfMemoryError here crashed the process on 0.1.878).
+                DebugLog.log("INFO", "BOT", "rfb run failed: ${e.javaClass.simpleName}: ${e.message}")
                 sessionActive = false
                 withContextMain { state = State.Error(e.message ?: "rfb failed") }
             }

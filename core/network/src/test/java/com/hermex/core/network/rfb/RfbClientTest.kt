@@ -29,16 +29,19 @@ class RfbClientTest {
     }
 
     private fun serverInit(w: Int, h: Int, name: String = "test"): ByteArray {
-        val m = ByteArray(32)
+        // Byte-for-byte the layout Xvnc on the bot desktop sends (verified against the live
+        // rfb.sock): w,h + 16-byte pixel format + name-length, then the name.
+        val m = ByteArray(24)
         m[0] = (w shr 8).toByte(); m[1] = w.toByte()
         m[2] = (h shr 8).toByte(); m[3] = h.toByte()
         m[4] = 32; m[5] = 24; m[6] = 0; m[7] = 1
-        m[8] = 0xFF.toByte(); m[10] = 0xFF.toByte(); m[12] = 0xFF.toByte()
+        m[8] = 0; m[9] = 0xFF.toByte(); m[10] = 0; m[11] = 0xFF.toByte()
+        m[12] = 0; m[13] = 0xFF.toByte()
         m[14] = 16; m[15] = 8; m[16] = 0
         val nb = name.toByteArray()
         val n = nb.size
-        m[28] = (n shr 24).toByte(); m[29] = (n shr 16).toByte()
-        m[30] = (n shr 8).toByte(); m[31] = n.toByte()
+        m[20] = (n shr 24).toByte(); m[21] = (n shr 16).toByte()
+        m[22] = (n shr 8).toByte(); m[23] = n.toByte()
         return m + nb
     }
 
@@ -48,6 +51,47 @@ class RfbClientTest {
         byteArrayOf(0, 0, 0, 0),           // SecurityResult OK
         serverInit(4, 2),
     )
+
+    @Test fun serverInit_desync_is_refused_not_allocated() {
+        // 0.1.878 OOM-crashed allocating 1,702,050,416 bytes read as a desktop-name length
+        // (ASCII "es:p"). The parser must refuse that and report it, never allocate it.
+        val p = Pipe()
+        val bad = serverInit(4, 2).copyOf(24)
+        bad[20] = 0x65; bad[21] = 0x73; bad[22] = 0x3a; bad[23] = 0x70
+        p.feed(
+            "RFB 003.008\n".toByteArray(),
+            byteArrayOf(0x01, 0x01),
+            byteArrayOf(0, 0, 0, 0),
+            bad,
+        )
+        p.client.run()
+        val err = p.client.lastError ?: "no error"
+        assertTrue("desync named: $err", err.contains("ServerInit desync"))
+        assertTrue("bytes logged: $err", err.contains("65 73 3a 70"))
+    }
+
+    @Test fun serverInit_parses_the_live_xvnc_bytes() {
+        // Golden capture from the bot desktop's rfb.sock (1440x900, "hermes:default").
+        val p = Pipe()
+        val init = ("05a003842018000100ff00ff00ff1008000000000000000e" +
+            "6865726d65733a64656661756c74").chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        p.feed("RFB 003.008\n".toByteArray(), byteArrayOf(0x01, 0x01), byteArrayOf(0, 0, 0, 0), init)
+        p.client.run()
+        assertEquals(1440, p.client.width)
+        assertEquals(900, p.client.height)
+        assertEquals("hermes:default", p.client.desktopName)
+        assertEquals("rfb pipe closed", p.client.lastError) // clean end-of-stream, not a desync
+    }
+
+    @Test fun bogus_rect_length_is_refused_before_allocation() {
+        // A Raw update claiming 4096x4096 = 67 MB: refuse it, don't allocate it.
+        val p = Pipe()
+        p.feed(*handshakeBytes().toTypedArray())
+        p.feed(byteArrayOf(0, 0, 0, 1, 0, 0, 0, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0))
+        p.client.run()
+        val err = p.client.lastError ?: "no error"
+        assertTrue("length guard fired: $err", err.contains("bogus length"))
+    }
 
     @Test fun handshake_completes_and_reports_geometry() {
         val p = Pipe()

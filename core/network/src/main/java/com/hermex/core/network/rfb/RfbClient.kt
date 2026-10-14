@@ -24,7 +24,7 @@ import java.util.zip.InflaterInputStream
  *   client: 0x01 (None)
  *   server: 4-byte SecurityResult (0 = OK)
  *   client: 0x01 (ClientInit, shared=1)
- *   server: ServerInit (32 bytes + name)
+ *   server: ServerInit (24 bytes + name)
  *
  * Decoders: Raw(0), CopyRect(-5), Hextile(-6), Tight(-260), TightPng(-261).
  * Input: pointer events + key events. The framebuffer is an IntArray of
@@ -40,7 +40,16 @@ class RfbClient(
         const val ENC_HEXTILE = -6
         const val ENC_TIGHT = -260
         const val ENC_TIGHT_PNG = -261
+
+        /** Largest single field the parser will ever allocate. A real RFB read is bounded by
+         *  the framebuffer (1440x900x4 = 5.2 MB for a full Raw update); anything above this
+         *  is a desync, and allocating it is what OOM-killed the app. */
+        const val MAX_READ = 8 shl 20
     }
+
+    /** First n bytes as hex — handshake/frame evidence for the debug export. */
+    private fun hex(b: ByteArray, n: Int = b.size): String =
+        b.take(minOf(n, b.size)).joinToString(" ") { "%02x".format(it) }
 
     @Volatile var width = 0; private set
     @Volatile var height = 0; private set
@@ -109,10 +118,25 @@ class RfbClient(
             ((sec[2].toInt() and 0xFF) shl 8) or (sec[3].toInt() and 0xFF)
         if (secResult != 0) throw IllegalStateException("security rejected: $secResult")
         send(byteArrayOf(0x01)) // ClientInit: shared=1
-        val init = read(32)
+        // ServerInit = width(2) + height(2) + pixel-format(16) + name-length(4) = 24 bytes,
+        // then the name. The pixel format is 16 bytes (bpp,depth,be,tc + 3×u16 max +
+        // 3×u8 shift + 3 pad) — reading 32 here swallows the name-length plus the first
+        // four name bytes, and the "name length" then lands on ASCII ("es:d") and asks
+        // for 1.7 GB, which is what OOM-killed 0.1.878.
+        val init = read(24)
         width = u16(init, 0)
         height = u16(init, 2)
-        val nameLen = u32(init, 28)
+        val nameLen = u32(init, 20)
+        // ServerInit is the anchor of the whole stream. If geometry/nameLen are not sane,
+        // we are not looking at a ServerInit — log the bytes verbatim so the export names
+        // the desync instead of OOM-crashing on a garbage allocation.
+        if (width !in 1..8192 || height !in 1..8192 || nameLen !in 0..4096 ||
+            width.toLong() * height > 32_000_000
+        ) {
+            throw IllegalStateException(
+                "ServerInit desync: ${width}x$height nameLen=$nameLen init=[${hex(init, 24)}]"
+            )
+        }
         desktopName = if (nameLen > 0) String(read(nameLen), Charsets.ISO_8859_1) else ""
         pixels = IntArray(width * height)
         Log.d(TAG, "ServerInit ${width}x$height '$desktopName'")
@@ -374,6 +398,15 @@ class RfbClient(
     private fun send(bytes: ByteArray) = sink(bytes)
 
     private fun read(n: Int): ByteArray {
+        // A length this big is never a real RFB field: it means the stream is desynced
+        // (we are reading frame data, or text, as a length). Allocating it OOM-crashes
+        // the whole app, so refuse it here and let the log name the desync.
+        if (n < 0 || n > MAX_READ) {
+            throw IllegalStateException(
+                "rfb stream desync: bogus length $n (max $MAX_READ); carry=${carry.size} " +
+                    "head=${hex(carry, minOf(carry.size, 24))}"
+            )
+        }
         val out = ByteArray(n)
         var pos = 0
         val start = System.nanoTime()
