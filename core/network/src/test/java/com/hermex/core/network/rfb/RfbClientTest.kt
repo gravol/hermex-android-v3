@@ -110,7 +110,13 @@ class RfbClientTest {
         assertTrue("post-init messages", sent.size >= 14 + 20 + 20 + 10)
         assertEquals("SetPixelFormat type", 0, sent[14].toInt())
         assertEquals("bpp 32", 32, sent[18].toInt())
+        // TigerVNC's Xvnc numbering: SetEncodings = 2, with a u16 encoding count.
         assertEquals("SetEncodings type", 2, sent[34].toInt())
+        assertEquals("encoding count is u16", 4, ((sent[36].toInt() and 0xFF) shl 8) or sent[37].toInt())
+        val fb = sent.copyOfRange(54, 64)
+        assertEquals("FBURequest type", 3, fb[0].toInt())
+        assertEquals("FBURequest width", 4, ((fb[6].toInt() and 0xFF) shl 8) or fb[7].toInt())
+        assertEquals("FBURequest height", 2, ((fb[8].toInt() and 0xFF) shl 8) or fb[9].toInt())
     }
 
     @Test fun handshake_waits_for_late_bytes() {
@@ -172,22 +178,50 @@ class RfbClientTest {
 
     @Test fun tight_fill_replicates_pixel() {
         val p = Pipe()
-        // Tight ctrl=0 (fill), 3-byte BGR pixel
-        val tight = rectHeader(0, 0, 2, 2, -260) + byteArrayOf(0x00, 0x33, 0x22, 0x11)
+        // Tight fill = control byte with numTopLevelColors == 7, then one R,G,B triple.
+        val tight = rectHeader(0, 0, 2, 2, -260) + byteArrayOf(0x07, 0x33, 0x22, 0x11)
         p.feed(*handshakeBytes().toTypedArray())
         p.feed(fbUpdate(tight))
         p.client.run()
-        for (i in intArrayOf(0, 1, 4, 5)) assertEquals(0xFF112233.toInt(), p.client.pixels[i])
+        for (i in intArrayOf(0, 1, 4, 5)) assertEquals(0xFF332211.toInt(), p.client.pixels[i])
+    }
+
+    @Test fun tight_zlib_indices_decode() {
+        // The common desktop case: Basic encoding, explicit palette, zlib-compressed
+        // palette indices. The old decoder never handled zlib at all.
+        val p = Pipe()
+        val idx = byteArrayOf(0, 1, 1, 0)
+        val def = java.util.zip.Deflater(6)
+        def.setInput(idx); def.finish()
+        val buf = ByteArray(64)
+        val n = def.deflate(buf)
+        def.end()
+        val comp = buf.copyOf(n)
+        // ctrl: compType 0 (basic), bit5 explicit palette (0x20), tli=1 -> 2 colours
+        var body = rectHeader(0, 0, 2, 2, -260) + byteArrayOf((0x20 or 1).toByte())
+        body += byteArrayOf(0xFF.toByte(), 0, 0)     // palette[0] = red  (R,G,B)
+        body += byteArrayOf(0, 0xFF.toByte(), 0)     // palette[1] = green
+        body += byteArrayOf(comp.size.toByte())      // compact length (<128 = one byte)
+        body += comp
+        p.feed(*handshakeBytes().toTypedArray())
+        p.feed(fbUpdate(body))
+        p.client.run()
+        assertEquals(0xFFFF0000.toInt(), p.client.pixels[0])
+        assertEquals(0xFF00FF00.toInt(), p.client.pixels[1])
+        assertEquals(0xFF00FF00.toInt(), p.client.pixels[4])
+        assertEquals(0xFFFF0000.toInt(), p.client.pixels[5])
+        assertEquals(null, p.client.lastError?.takeIf { it.startsWith("tight") })
     }
 
     @Test fun hextile_solid_bg_tile() {
         val p = Pipe()
         // 2x2, one 16x16 tile clipped to 2x2, subencoding=0x01 (bg specified)
+        // Hextile colours are R,G,B (like Tight), not the framebuffer's B,G,R,X order.
         val tile = rectHeader(0, 0, 2, 2, -6) + byteArrayOf(0x01, 0x33, 0x22, 0x11)
         p.feed(*handshakeBytes().toTypedArray())
         p.feed(fbUpdate(tile))
         p.client.run()
-        for (i in intArrayOf(0, 1, 4, 5)) assertEquals(0xFF112233.toInt(), p.client.pixels[i])
+        for (i in intArrayOf(0, 1, 4, 5)) assertEquals(0xFF332211.toInt(), p.client.pixels[i])
     }
 
     @Test fun pointer_and_key_events_are_framed() {

@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -61,7 +63,9 @@ fun BotScreenScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) { engine.connect() }
 
-    Column(Modifier.fillMaxSize()) {
+    // imePadding: the Take over / type-message row must rise above the keyboard, and the
+    // canvas must shrink rather than sit under it (0.1.879 left both under the IME).
+    Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,

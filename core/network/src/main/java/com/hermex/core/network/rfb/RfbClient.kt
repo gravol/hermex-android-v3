@@ -150,12 +150,17 @@ class RfbClient(
         pf[14] = 16; pf[15] = 8; pf[16] = 0
         send(pf)
 
-        // SetEncodings: Tight, TightPng, CopyRect, Raw
+        // SetEncodings: Tight, TightPng, CopyRect, Raw.
+        // TigerVNC's Xvnc numbering (proved against the live socket, NOT RFC 6143):
+        // SetPixelFormat=0, SetEncodings=2, FramebufferUpdateRequest=3, KeyEvent=4,
+        // PointerEvent=5 — type 1 is reserved and Xvnc closes the link on it.
+        // The encoding count is a u16 here (4+4n bytes); the RFC's u32 makes a 22-byte
+        // packet, the bridge frames 4+4n, and the 2 leftover bytes desync everything.
         val encs = intArrayOf(ENC_TIGHT, ENC_TIGHT_PNG, ENC_COPYRECT, ENC_RAW)
-        val se = ByteArray(6 + 4 * encs.size)
+        val se = ByteArray(4 + 4 * encs.size)
         se[0] = 2; se[1] = 0
-        writeI32(se, 2, encs.size)
-        encs.forEachIndexed { i, e -> writeI32(se, 6 + 4 * i, e) }
+        writeU16(se, 2, encs.size)
+        encs.forEachIndexed { i, e -> writeI32(se, 4 + 4 * i, e) }
         send(se)
     }
 
@@ -166,9 +171,19 @@ class RfbClient(
             val msgType = read(1)[0].toInt() and 0xFF
             when (msgType) {
                 0 -> framebufferUpdate()
-                1 -> read(1) // Bell — ignore
-                2 -> { val n = u32(read(4), 0); read(n) } // ServerFakeDesktopName
-                255 -> { val n = u32(read(4), 0); val m = String(read(n)); Log.w(TAG, "server error: $m") }
+                // Server numbering: 1 = SetColourMapEntries (pad + first-colour u16 +
+                // n-colours u16), 2 = Bell (pad + seconds u32). Consuming the wrong
+                // payload length desyncs the stream and blanks the picture.
+                1 -> read(5)
+                2 -> read(7)
+                255 -> {
+                    // TigerVNC ServerFbUpdate (compressed ring buffer). We never advertise
+                    // that pseudo-encoding, so treat it as a skip-and-log, not a string.
+                    val hdr = read(17)
+                    val size = u32(hdr, 13)
+                    read(size)
+                    Log.w(TAG, "ServerFbUpdate $size bytes (ring-buffer protocol not enabled)")
+                }
                 else -> { Log.w(TAG, "unknown server msg $msgType"); return }
             }
         }
@@ -182,6 +197,14 @@ class RfbClient(
             val x = u16(hdr, 0); val y = u16(hdr, 2)
             val w = u16(hdr, 4); val h = u16(hdr, 6)
             val enc = i32(read(4), 0)
+            if (enc == ENC_TIGHT && w == 0 && h == 0) {
+                // Tight flush opcode (a zero-size rect): x = stream id,
+                // y = 0x21 flush the zlib stream, 0x22 flush + drop its palette.
+                val s = x and 3
+                tightInflater[s].reset()
+                if (y == 0x22) tightPaletteReady[s] = false
+                continue
+            }
             when (enc) {
                 ENC_RAW -> decodeRaw(x, y, w, h)
                 ENC_COPYRECT -> decodeCopyRect(x, y, w, h)
@@ -195,8 +218,11 @@ class RfbClient(
 
     /** Ask for a full-frame update (call after input that needs a repaint). */
     fun requestFullUpdate() {
+        // FramebufferUpdateRequest (TigerVNC type 3): type, pad, x, y, w, h = 10B.
+        // There is no incremental flag on this server; a longer packet leaves a stray
+        // byte that Xvnc reads as the next message type and closes on.
         val m = ByteArray(10)
-        m[0] = 3; m[1] = 1
+        m[0] = 3; m[1] = 0
         writeU16(m, 2, 0); writeU16(m, 4, 0)
         writeU16(m, 6, width); writeU16(m, 8, height)
         send(m)
@@ -205,7 +231,7 @@ class RfbClient(
     /** Incremental update request for a region (UI-driven, e.g. visible viewport). */
     fun requestUpdate(x: Int, y: Int, w: Int, h: Int, incremental: Boolean = true) {
         val m = ByteArray(10)
-        m[0] = 3; m[1] = if (incremental) 1 else 0
+        m[0] = 3; m[1] = 0
         writeU16(m, 2, x); writeU16(m, 4, y)
         writeU16(m, 6, w); writeU16(m, 8, h)
         send(m)
@@ -248,8 +274,8 @@ class RfbClient(
                 val tileW = minOf(16, w - tx)
                 val tileH = minOf(16, h - ty)
                 val sub = read(1)[0].toInt() and 0xFF
-                if (sub and 0x01 != 0) bg = argbFromRaw(read(3))
-                if (sub and 0x02 != 0) fg = argbFromRaw(read(3))
+                if (sub and 0x01 != 0) bg = argbFromRgb(read(3))
+                if (sub and 0x02 != 0) fg = argbFromRgb(read(3))
                 val base = (y + ty) * width + (x + tx)
                 if (sub and 0x08 != 0) { // any subrects
                     fillRect(base, tileW, tileH, bg)
@@ -259,7 +285,7 @@ class RfbClient(
                     var colorPending = false
                     for (s in 0 until nSub) {
                         val cm = read(1)[0].toInt() and 0xFF
-                        if (cm and 0x01 != 0) { color = argbFromRaw(read(3)); colorPending = true }
+                        if (cm and 0x01 != 0) { color = argbFromRgb(read(3)); colorPending = true }
                         val xy = read(1)[0].toInt() and 0xFF
                         val wh = read(1)[0].toInt() and 0xFF
                         val sx = (xy shr 4) and 0x0F
@@ -288,59 +314,165 @@ class RfbClient(
     private fun argbFromRaw(b: ByteArray): Int =
         (0xFF shl 24) or ((b[2].toInt() and 0xFF) shl 16) or ((b[1].toInt() and 0xFF) shl 8) or (b[0].toInt() and 0xFF)
 
-    // Tight history: the last rect's raw pixel data, for copy-from-previous.
-    private var tightHistory = ByteArray(0)
+    /** 3-byte **R,G,B** triple (Tight fill/palette and Hextile colours are RGB order,
+     *  unlike the 32-bit framebuffer which is B,G,R,X) → ARGB. */
+    private fun argbFromRgb(b: ByteArray, o: Int = 0): Int =
+        (0xFF shl 24) or ((b[o].toInt() and 0xFF) shl 16) or ((b[o + 1].toInt() and 0xFF) shl 8) or
+            (b[o + 2].toInt() and 0xFF)
+
+    // ── Tight (TightVNC) ───────────────────────────────────────────
+    //
+    // Control byte: bits 7-6 = compression type (0 Basic, 1 JPEG, 2 PNG,
+    // 3 CopyFromHistory). For Basic: bit 5 = useExplicitTopLevelColors,
+    // bits 4-0 = numTopLevelColors (0..7, and 7 means "fill"). Index data
+    // with 1..6 top-level colours is zlib-compressed on one of four streams
+    // chosen by (y/16 + x/16) % 4, and each stream keeps its own palette.
+    // A zero-size Tight rect (y = 0x21 / 0x22) flushes stream x.
+    //
+    // The old decoder read the LOW three bits as the compression type, so a
+    // normal compressed desktop rect decoded as nothing — the blank screen.
+
+    private val tightInflater = Array(4) { java.util.zip.Inflater() }
+    private val tightPalette = Array(4) { IntArray(256) }
+    private val tightPaletteReady = BooleanArray(4)
+
+    /** Tight's 32 KB history: CopyFromHistory copies from the last decoded rect. */
+    private var histRgba = ByteArray(0)
+    private var histW = 0
 
     private fun decodeTight(x: Int, y: Int, w: Int, h: Int, pngAllowed: Boolean) {
         val ctrl = read(1)[0].toInt() and 0xFF
-        val compType = ctrl and 0x07
-        when (compType) {
-            0 -> { // fill: 3-byte pixel replicated
-                val px = argbFromRaw(read(3))
-                fillRect(y * width + x, w, h, px)
-                tightHistory = ByteArray(0)
+        when ((ctrl shr 6) and 3) {
+            3 -> copyFromHistory(x, y, w, h)
+            1, 2 -> decodeTightImage(x, y, w, h)
+            else -> decodeTightBasic(x, y, w, h, ctrl)
+        }
+    }
+
+    /** Tight's 1/2/3-byte "compact length" (7 bits per byte, high bit = continue). */
+    private fun readCompactLength(): Int {
+        var len = 0
+        var shift = 0
+        while (true) {
+            val b = read(1)[0].toInt() and 0xFF
+            len = len or ((b and 0x7F) shl shift)
+            if (b < 128) return len
+            shift += 7
+            if (shift > 21) throw IllegalStateException("tight: bad compact length")
+        }
+    }
+
+    private fun decodeTightBasic(x: Int, y: Int, w: Int, h: Int, ctrl: Int) {
+        val useExplicit = ctrl and 0x20 != 0
+        val tli = ctrl and 7
+        val s = (y / 16 + x / 16) % 4
+        if (tli == 7) { // fill: one 3-byte colour for the whole rect
+            val px = argbFromRgb(read(3))
+            fillRect(y * width + x, w, h, px)
+            tightPaletteReady[s] = false
+            return
+        }
+        val numColors = tli + 1
+        if (useExplicit) {
+            val pal = read(numColors * 3)
+            for (i in 0 until numColors) tightPalette[s][i] = argbFromRgb(pal, i * 3)
+            tightPaletteReady[s] = true
+        }
+        if (!tightPaletteReady[s]) {
+            throw IllegalStateException("tight: no palette for stream $s (ctrl=$ctrl)")
+        }
+        val n = w * h
+        val idx = ByteArray(n)
+        if (tli == 0) {
+            // TPI: 4-bit palette indices, two per byte.
+            val packed = read((n + 1) / 2)
+            for (i in 0 until n) {
+                val b = packed[i / 2].toInt() and 0xFF
+                idx[i] = (if (i % 2 == 0) (b shr 4) else (b and 0x0F)).toByte()
             }
-            3 -> { // copy from history
-                val src = read(4)
-                val sx = u16(src, 0); val sy = u16(src, 2)
-                for (row in 0 until h) {
-                    val srow = (sy + row) * width + sx
-                    val drow = (y + row) * width + x
-                    pixels.copyInto(pixels, drow, srow, srow + w)
-                }
+        } else {
+            val compLen = readCompactLength()
+            if (compLen == 0) {
+                // Spec: zero-length compressed data means "fill with the last colour".
+                fillRect(y * width + x, w, h, tightPalette[s][0])
+                return
             }
-            1, 2, 4, 5, 6, 7 -> { // jpeg / tpic(png) / tpicq
-                val explicit = ctrl and 0x80 != 0
-                val type = if (explicit) (ctrl shr 3) and 0x07 else compType
-                val len: Int = if (type == 1 || type == 2) {
-                    if (ctrl and 0x40 != 0) { // 3-byte length
-                        val l = read(3)
-                        u24(l, 0)
-                    } else {
-                        val n = ((ctrl shr 6) and 0x03) + 1
-                        val l = read(n)
-                        var v = 0; for (b in l) v = (v shl 8) or (b.toInt() and 0xFF); v
-                    }
-                } else {
-                    // tpicq: quantized quality in bits 3-5, length follows
-                    val q = (ctrl shr 3) and 0x07
-                    if (ctrl and 0x40 != 0) {
-                        val l = read(3); u24(l, 0)
-                    } else {
-                        val n = ((ctrl shr 6) and 0x03) + 1
-                        val l = read(n)
-                        var v = 0; for (b in l) v = (v shl 8) or (b.toInt() and 0xFF); v
-                    }
-                }
-                val data = read(len)
-                val bmp = BitmapFactory.decodeByteArray(data, 0, data.size)
-                    ?: throw IllegalStateException("image decode failed (type $type, $len bytes)")
-                blitBitmap(bmp, x, y)
-                if (bmp.width * bmp.height * 4 <= 1_000_000) {
-                    tightHistory = bmpToRgba(bmp)
-                }
+            val comp = read(compLen)
+            val inf = tightInflater[s]
+            inf.reset()
+            inf.setInput(comp)
+            var got = 0
+            while (got < n) {
+                val k = inf.inflate(idx, got, n - got)
+                if (k == 0) break
+                got += k
             }
-            else -> throw IllegalStateException("tight compType $compType")
+            if (got != n) {
+                throw IllegalStateException("tight zlib: inflated $got of $n (stream $s, $compLen B)")
+            }
+        }
+        var p = 0
+        for (row in 0 until h) {
+            val off = (y + row) * width + x
+            for (col in 0 until w) {
+                pixels[off + col] = tightPalette[s][idx[p].toInt() and 0xFF]
+                p++
+            }
+        }
+        saveHistory(x, y, w, h)
+    }
+
+    private fun decodeTightImage(x: Int, y: Int, w: Int, h: Int) {
+        val len = readCompactLength()
+        val data = read(len)
+        val bmp = BitmapFactory.decodeByteArray(data, 0, data.size)
+            ?: throw IllegalStateException("tight image decode failed ($len bytes)")
+        blitBitmap(bmp, x, y)
+        saveHistory(bmp)
+    }
+
+    private fun copyFromHistory(x: Int, y: Int, w: Int, h: Int) {
+        val src = read(4)
+        val sx = u16(src, 0); val sy = u16(src, 2)
+        if (histW == 0 || histRgba.isEmpty()) return
+        for (row in 0 until h) {
+            for (col in 0 until w) {
+                val si = ((sy + row) * histW + (sx + col)) * 4
+                if (si + 3 >= histRgba.size) continue
+                val di = (y + row) * width + (x + col)
+                if (di >= pixels.size) continue
+                pixels[di] = (0xFF shl 24) or
+                    ((histRgba[si + 2].toInt() and 0xFF) shl 16) or
+                    ((histRgba[si + 1].toInt() and 0xFF) shl 8) or
+                    (histRgba[si].toInt() and 0xFF)
+            }
+        }
+    }
+
+    private fun saveHistory(x: Int, y: Int, w: Int, h: Int) {
+        val n = w * h
+        if (n <= 0 || n > 4_000_000) return
+        val out = ByteArray(n * 4)
+        var p = 0
+        for (row in 0 until h) {
+            val off = (y + row) * width + x
+            for (col in 0 until w) {
+                val c = pixels[off + col]
+                out[p] = (c and 0xFF).toByte()
+                out[p + 1] = ((c shr 8) and 0xFF).toByte()
+                out[p + 2] = ((c shr 16) and 0xFF).toByte()
+                p += 4
+            }
+        }
+        histRgba = out
+        histW = w
+    }
+
+    private fun saveHistory(bmp: Bitmap) {
+        val px = bmpToRgba(bmp)
+        if (px.size <= 16_000_000) {
+            histRgba = px
+            histW = bmp.width
         }
     }
 
@@ -372,7 +504,7 @@ class RfbClient(
         val x = (nx * width).toInt().coerceIn(0, width - 1)
         val y = (ny * height).toInt().coerceIn(0, height - 1)
         val m = ByteArray(6)
-        m[0] = 5; m[1] = buttons.toByte()
+        m[0] = 5; m[1] = buttons.toByte()  // TigerVNC PointerEvent = 5
         writeU16(m, 2, x); writeU16(m, 4, y)
         send(m)
     }
@@ -380,7 +512,7 @@ class RfbClient(
     /** Key event: X11 keysym, down=true. */
     fun sendKey(keysym: Int, down: Boolean) {
         val m = ByteArray(8)
-        m[0] = 4; m[1] = if (down) 1 else 0
+        m[0] = 4; m[1] = if (down) 1 else 0  // TigerVNC KeyEvent = 4
         writeI32(m, 4, keysym)
         send(m)
     }
