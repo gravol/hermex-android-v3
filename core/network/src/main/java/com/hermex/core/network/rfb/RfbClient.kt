@@ -193,13 +193,19 @@ class RfbClient(
             val x = u16(hdr, 0); val y = u16(hdr, 2)
             val w = u16(hdr, 4); val h = u16(hdr, 6)
             val enc = i32(read(4), 0)
-            if (enc == ENC_TIGHT && w == 0 && h == 0) {
-                // Tight flush opcode (a zero-size rect): x = stream id,
-                // y = 0x21 flush the zlib stream, 0x22 flush + drop its palette.
-                val s = x and 3
-                tightInflater[s].reset()
-                if (y == 0x22) tightPaletteReady[s] = false
-                continue
+            if (enc == ENC_TIGHT || enc == ENC_TIGHT_PNG) {
+                // Tight's zero-size rect is a control opcode, not a picture: x = stream
+                // id, and it carries EXACTLY ONE byte — the flush code (0x21 flush the
+                // zlib stream, 0x22 flush + drop its palette, anything else a no-op).
+                // Reading zero bytes leaves that byte in the stream and every following
+                // rect header lands one byte off, which is the blank-screen desync.
+                if (w == 0 && h == 0) {
+                    val code = read(1)[0].toInt() and 0xFF
+                    val s = x and 3
+                    if (code == 0x21) tightInflater[s].reset()
+                    if (code == 0x22) { tightInflater[s].reset(); tightPaletteReady[s] = false }
+                    continue
+                }
             }
             when (enc) {
                 ENC_RAW -> decodeRaw(x, y, w, h)
@@ -350,10 +356,11 @@ class RfbClient(
             tightPaletteReady[s] = false
             return
         }
-        when ((ctrl shr 6) and 3) {
-            3 -> copyFromHistory(x, y, w, h)
-            1, 2 -> decodeTightImage(x, y, w, h)
-            else -> decodeTightBasic(x, y, w, h, ctrl)
+        when ((ctrl shr 5) and 7) {
+            1 -> decodeTightBasic(x, y, w, h, ctrl)
+            2, 3 -> decodeTightImage(x, y, w, h)
+            4 -> copyFromHistory(x, y, w, h)
+            else -> throw IllegalStateException("tight: bad control byte $ctrl")
         }
     }
 
@@ -371,38 +378,47 @@ class RfbClient(
     }
 
     private fun decodeTightBasic(x: Int, y: Int, w: Int, h: Int, ctrl: Int) {
-        val useExplicit = ctrl and 0x20 != 0
-        val tli = ctrl and 7
+        // Basic compression control byte: bits 4-3 = filter id (0 Copy, 1 Palette,
+        // 2 Gradient), bits 2-0 = compression level. The old decoder read bit 5 as
+        // "explicit palette" — bit 5 belongs to the compression TYPE field, so every
+        // basic rect made it consume palette bytes that were never sent, desyncing the
+        // stream (log: "unhandled encoding -350941171", "unknown server msg 235").
+        val filterId = (ctrl and 0x18) shr 3
+        val level = ctrl and 0x07
         val s = (y / 16 + x / 16) % 4
-        if (tli == 7) { // fill: one 3-byte colour for the whole rect
-            val px = argbFromRgb(read(3))
-            fillRect(y * width + x, w, h, px)
-            tightPaletteReady[s] = false
-            return
-        }
-        val numColors = tli + 1
-        if (useExplicit) {
+
+        if (filterId != 0) read(1) // filter id byte follows the control byte
+        val numColors = if (level == 0) 256 else (1 shl level)
+
+        if (filterId == 1) {
+            // TightFilterPalette: the filter byte carries (numColors - 1) and the
+            // palette is the only way a stream palette ever arrives.
             val pal = read(numColors * 3)
             for (i in 0 until numColors) tightPalette[s][i] = argbFromRgb(pal, i * 3)
             tightPaletteReady[s] = true
         }
-        if (!tightPaletteReady[s]) {
-            throw IllegalStateException("tight: no palette for stream $s (ctrl=$ctrl)")
+
+        if (numColors == 1) {
+            fillRect(y * width + x, w, h, tightPalette[s][0])
+            saveHistory(x, y, w, h)
+            return
         }
+
+        if (!tightPaletteReady[s]) {
+            throw IllegalStateException("tight: no palette for stream $s (ctrl=$ctrl level=$level)")
+        }
+
         val n = w * h
         val idx = ByteArray(n)
-        if (tli == 0) {
-            // TPI: 4-bit palette indices, two per byte.
-            val packed = read((n + 1) / 2)
-            for (i in 0 until n) {
-                val b = packed[i / 2].toInt() and 0xFF
-                idx[i] = (if (i % 2 == 0) (b shr 4) else (b and 0x0F)).toByte()
-            }
+        if (level == 0) {
+            // Level 0 is uncompressed TPI: one palette-index byte per pixel.
+            read(n).copyInto(idx)
         } else {
             val compLen = readCompactLength()
             if (compLen == 0) {
                 // Spec: zero-length compressed data means "fill with the last colour".
                 fillRect(y * width + x, w, h, tightPalette[s][0])
+                saveHistory(x, y, w, h)
                 return
             }
             val comp = read(compLen)
@@ -419,6 +435,31 @@ class RfbClient(
                 throw IllegalStateException("tight zlib: inflated $got of $n (stream $s, $compLen B)")
             }
         }
+
+        if (filterId == 2) {
+            // Gradient: first pixel of each row comes from the palette, every following
+            // pixel is the previous one plus a signed delta applied to all three
+            // channels, clamped to 0..255.
+            for (row in 0 until h) {
+                val off = (y + row) * width + x
+                var pr = 0; var pg = 0; var pb = 0
+                for (col in 0 until w) {
+                    if (col == 0) {
+                        val p = tightPalette[s][idx[row * w].toInt() and 0xFF]
+                        pr = (p shr 16) and 0xFF; pg = (p shr 8) and 0xFF; pb = p and 0xFF
+                    } else {
+                        val d = idx[row * w + col].toInt() // signed delta
+                        pr = (pr + d).coerceIn(0, 255)
+                        pg = (pg + d).coerceIn(0, 255)
+                        pb = (pb + d).coerceIn(0, 255)
+                    }
+                    pixels[off + col] = (0xFF shl 24) or (pr shl 16) or (pg shl 8) or pb
+                }
+            }
+            saveHistory(x, y, w, h)
+            return
+        }
+
         var p = 0
         for (row in 0 until h) {
             val off = (y + row) * width + x
