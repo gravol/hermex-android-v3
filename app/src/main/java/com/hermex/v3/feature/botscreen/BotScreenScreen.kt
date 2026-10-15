@@ -193,12 +193,18 @@ private fun Controls(engine: BotScreenEngine, takeover: Boolean) {
         }
         if (takeover) {
             Spacer(Modifier.height(8.dp))
+            Text(
+                "Keystrokes go to the focused field on the bot's desktop — this is not a chat message.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("type for the bot…") },
+                    placeholder = { Text("type to the desktop…") },
                     singleLine = true,
                 )
                 Spacer(Modifier.width(8.dp))

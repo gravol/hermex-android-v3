@@ -295,13 +295,14 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
 
     // ── rendering ──────────────────────────────────────────────────
 
-    /** Paint the latest framebuffer into [bitmap] (scaled to fit). */
+    /** Paint the published snapshot into [bitmap] (scaled to fit). Reads the snapshot, never
+     *  the decoder's live buffer — the decoder can be mid-update while the UI is drawing. */
     fun blitTo(bitmap: Bitmap): Boolean {
         val c = rfb ?: return false
         val w = c.width; val h = c.height
         if (!c.connected || w <= 0 || h <= 0) return false
         if (bitmap.width != w || bitmap.height != h) return false
-        bitmap.setPixels(c.pixels, 0, w, 0, 0, w, h)
+        bitmap.setPixels(c.snapshot(), 0, w, 0, 0, w, h)
         return true
     }
 

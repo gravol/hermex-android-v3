@@ -6,6 +6,7 @@ import android.util.Log
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
+import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
@@ -56,11 +57,29 @@ class RfbClient(
     @Volatile var desktopName = ""; private set
     @Volatile var connected = false; private set
 
-    /** ARGB framebuffer, row-major. Allocated on ServerInit. */
+    /** ARGB framebuffer, row-major. Allocated on ServerInit. Decoder-owned — the UI must
+     *  never read this array; it reads [snapshot]. */
     var pixels = IntArray(0); private set
 
-    /** Monotonic counter bumped on every framebuffer update — UI observes it. */
+    /** Published snapshot the UI renders. Copy-on-publish under [pubLock], so the UI never
+     *  sees a framebuffer the decoder is mutating, and never a half-applied frame. */
+    private var published = IntArray(0)
+    private val pubLock = Any()
+
+    /** Monotonic counter bumped on every published update — UI observes it. */
     @Volatile var frameSeq = 0L; private set
+
+    /** Copy the decode buffer into the published snapshot. Call after a FULL update. */
+    private fun publish() {
+        synchronized(pubLock) {
+            if (published.size != pixels.size) published = IntArray(pixels.size)
+            pixels.copyInto(published)
+        }
+        frameSeq++
+    }
+
+    /** Stable snapshot for rendering. Never mutated by the decoder after publish. */
+    fun snapshot(): IntArray = synchronized(pubLock) { published }
 
     private val inbox = ConcurrentLinkedQueue<ByteArray>()
     private var carry = ByteArray(0)
@@ -193,6 +212,14 @@ class RfbClient(
             val x = u16(hdr, 0); val y = u16(hdr, 2)
             val w = u16(hdr, 4); val h = u16(hdr, 6)
             val enc = i32(read(4), 0)
+            // Rectangle bounds are server-supplied. The handshake bounds the ALLOCATION,
+            // not each rect: a desynced stream produces a rect that writes past the
+            // framebuffer. Continuing after that prints garbage for the rest of the
+            // session, so treat an out-of-bounds rect as fatal and end the connection.
+            if (x + w > width || y + h > height) {
+                throw IOException(
+                    "rect out of bounds: $x,$y ${w}x$h in ${width}x$height (enc=$enc)")
+            }
             if (enc == ENC_TIGHT || enc == ENC_TIGHT_PNG) {
                 // Tight's zero-size rect is a control opcode, not a picture: x = stream
                 // id, and it carries EXACTLY ONE byte — the flush code (0x21 flush the
@@ -215,7 +242,9 @@ class RfbClient(
                 else -> Log.w(TAG, "unhandled encoding $enc")
             }
         }
-        if (nRects > 0) frameSeq++
+        // Publish AFTER the whole update, not per rect: a frame can be many rects, and the
+        // UI must never see a half-applied frame. The snapshot is what the UI reads.
+        if (nRects > 0) publish()
     }
 
     /** Ask for a full-frame update (call after input that needs a repaint). */
@@ -276,34 +305,42 @@ class RfbClient(
                 val tileW = minOf(16, w - tx)
                 val tileH = minOf(16, h - ty)
                 val sub = read(1)[0].toInt() and 0xFF
-                if (sub and 0x01 != 0) bg = argbFromRgb(read(3))
-                if (sub and 0x02 != 0) fg = argbFromRgb(read(3))
                 val base = (y + ty) * width + (x + tx)
+                // RFC 6143 subencoding bits: 0x01 Raw, 0x02 BackgroundSpecified,
+                // 0x04 ForegroundSpecified, 0x08 AnySubrects, 0x10 SubrectsColoured.
+                // Reading Background on bit 0x01 makes a Raw tile consume 3 bytes where the
+                // server sends tileW*tileH*3 — that desyncs the whole stream.
+                if (sub and 0x02 != 0) bg = argbFromRgb(read(3))
+                if (sub and 0x04 != 0) fg = argbFromRgb(read(3))
+                if (sub and 0x01 != 0) { // Raw: full pixel data for this tile, in the
+                    // server's pixel format (32bpp BGRA here), NOT 3-byte RGB triples.
+                    val bpp = 4
+                    for (r in 0 until tileH) {
+                        val px = read(tileW * bpp)
+                        for (c in 0 until tileW) {
+                            pixels[base + r * width + c] = argbFromRaw(px, c * bpp)
+                        }
+                    }
+                    continue
+                }
+                fillRect(base, tileW, tileH, bg)
                 if (sub and 0x08 != 0) { // any subrects
-                    fillRect(base, tileW, tileH, bg)
                     val nSub = read(1)[0].toInt() and 0xFF
-                    var pos = 0
                     var color = fg
-                    var colorPending = false
                     for (s in 0 until nSub) {
                         val cm = read(1)[0].toInt() and 0xFF
-                        if (cm and 0x01 != 0) { color = argbFromRgb(read(3)); colorPending = true }
+                        if (cm and 0x01 != 0) { color = argbFromRgb(read(3)) }
                         val xy = read(1)[0].toInt() and 0xFF
                         val wh = read(1)[0].toInt() and 0xFF
                         val sx = (xy shr 4) and 0x0F
                         val sy2 = xy and 0x0F
                         val sw = ((wh shr 4) and 0x0F) + 1
                         val sh = (wh and 0x0F) + 1
-                        val c = if (cm and 0x01 != 0) color else if (cm and 0x02 != 0) fg
-                            else if (colorPending) color else fg
+                        val c = if (cm and 0x01 != 0) color else fg
                         for (rr in 0 until sh) {
-                            val off = base + (sy2 + rr) * width + sx
-                            fillRect(off, sw, 1, c)
+                            fillRect(base + (sy2 + rr) * width + sx, sw, 1, c)
                         }
-                        pos++
                     }
-                } else {
-                    fillRect(base, tileW, tileH, bg)
                 }
             }
         }
@@ -313,8 +350,8 @@ class RfbClient(
         for (rr in 0 until h) pixels.fill(color, off + rr * width, off + rr * width + w)
     }
 
-    private fun argbFromRaw(b: ByteArray): Int =
-        (0xFF shl 24) or ((b[2].toInt() and 0xFF) shl 16) or ((b[1].toInt() and 0xFF) shl 8) or (b[0].toInt() and 0xFF)
+    private fun argbFromRaw(b: ByteArray, o: Int = 0): Int =
+        (0xFF shl 24) or ((b[o + 2].toInt() and 0xFF) shl 16) or ((b[o + 1].toInt() and 0xFF) shl 8) or (b[o].toInt() and 0xFF)
 
     /** 3-byte **R,G,B** triple (Tight fill/palette and Hextile colours are RGB order,
      *  unlike the 32-bit framebuffer which is B,G,R,X) → ARGB. */

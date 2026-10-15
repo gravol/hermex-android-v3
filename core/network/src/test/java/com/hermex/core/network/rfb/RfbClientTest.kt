@@ -90,7 +90,11 @@ class RfbClientTest {
         p.feed(byteArrayOf(0, 0, 0, 1, 0, 0, 0, 0, 0x10, 0, 0x10, 0, 0, 0, 0, 0))
         p.client.run()
         val err = p.client.lastError ?: "no error"
-        assertTrue("length guard fired: $err", err.contains("bogus length"))
+        // Two guards cover this: the rect-bounds check (4096x4096 does not fit a 4x2
+        // framebuffer) and the read-length cap. Either refusing before allocating is the
+        // requirement; the bounds check fires first for this rect.
+        assertTrue("allocation guard fired: $err",
+            err.contains("bogus length") || err.contains("rect out of bounds"))
     }
 
     @Test fun handshake_completes_and_reports_geometry() {
@@ -106,14 +110,15 @@ class RfbClientTest {
             String(sent, 0, 12) == "RFB 003.008\n")
         assertTrue("client picks None", sent[12] == 0x01.toByte())
         assertTrue("client sends ClientInit shared", sent[13] == 0x01.toByte())
-        // SetPixelFormat (20) + SetEncodings (4+16) + FBU request (10)
-        assertTrue("post-init messages", sent.size >= 14 + 20 + 20 + 10)
-        assertEquals("SetPixelFormat type", 0, sent[14].toInt())
-        assertEquals("bpp 32", 32, sent[18].toInt())
-        // TigerVNC's Xvnc numbering: SetEncodings = 2, with a u16 encoding count.
-        assertEquals("SetEncodings type", 2, sent[34].toInt())
-        assertEquals("encoding count is u16", 4, ((sent[36].toInt() and 0xFF) shl 8) or sent[37].toInt())
-        val fb = sent.copyOfRange(54, 64)
+        // SetPixelFormat is NOT sent: Xvnc's default is already 32bpp depth-24 LE rgb888
+        // @16/8/0, and TigerVNC closed the link on the packet we used to send. So the sent
+        // layout is: 12 version + 1 security type + 1 ClientInit + SetEncodings(4+4n) +
+        // FBURequest(10) = 44 bytes.
+        assertTrue("post-init messages", sent.size >= 14 + 20 + 10)
+        // TigerVNC numbering: SetEncodings = 2 (type 1 is reserved; Xvnc closes on it).
+        assertEquals("SetEncodings type", 2, sent[14].toInt())
+        assertEquals("encoding count is u16", 4, ((sent[16].toInt() and 0xFF) shl 8) or sent[17].toInt())
+        val fb = sent.copyOfRange(34, 44)
         assertEquals("FBURequest type", 3, fb[0].toInt())
         assertEquals("FBURequest width", 4, ((fb[6].toInt() and 0xFF) shl 8) or fb[7].toInt())
         assertEquals("FBURequest height", 2, ((fb[8].toInt() and 0xFF) shl 8) or fb[9].toInt())
@@ -197,8 +202,15 @@ class RfbClientTest {
         val n = def.deflate(buf)
         def.end()
         val comp = buf.copyOf(n)
-        // ctrl: compType 0 (basic), bit5 explicit palette (0x20), tli=1 -> 2 colours
-        var body = rectHeader(0, 0, 2, 2, -260) + byteArrayOf((0x20 or 1).toByte())
+        // Tight control byte: bits 7-5 = type (000 Fill, 001 Basic), bits 4-3 = filter
+        // (0 Copy, 1 Palette, 2 Gradient), bits 2-0 = level. A palette arrives ONLY via
+        // TightFilterPalette, whose filter byte carries (numColors - 1). The old test put
+        // "explicit palette" in bit 5, which belongs to the type field — the decoder read
+        // palette bytes that were never sent and desynced.
+        // ctrl = Basic(type 001 = 0x20) + Palette filter (bits 4-3 = 01 = 0x08) + level 1
+        // = 0x29. Bits 7-5 are the TYPE field: 0x09 has top three bits zero, which is Fill.
+        var body = rectHeader(0, 0, 2, 2, -260) + byteArrayOf(0x29.toByte())
+        body += byteArrayOf(0x01.toByte())          // filter byte: numColors-1 = 1 -> 2 colours
         body += byteArrayOf(0xFF.toByte(), 0, 0)     // palette[0] = red  (R,G,B)
         body += byteArrayOf(0, 0xFF.toByte(), 0)     // palette[1] = green
         body += byteArrayOf(comp.size.toByte())      // compact length (<128 = one byte)
@@ -215,9 +227,10 @@ class RfbClientTest {
 
     @Test fun hextile_solid_bg_tile() {
         val p = Pipe()
-        // 2x2, one 16x16 tile clipped to 2x2, subencoding=0x01 (bg specified)
-        // Hextile colours are R,G,B (like Tight), not the framebuffer's B,G,R,X order.
-        val tile = rectHeader(0, 0, 2, 2, -6) + byteArrayOf(0x01, 0x33, 0x22, 0x11)
+        // 2x2, one 16x16 tile clipped to 2x2. RFC 6143: subencoding bit 0x02 =
+        // BackgroundSpecified (0x01 is Raw). Hextile colours are R,G,B (like Tight), not
+        // the framebuffer's B,G,R,X order.
+        val tile = rectHeader(0, 0, 2, 2, -6) + byteArrayOf(0x02.toByte(), 0x33.toByte(), 0x22.toByte(), 0x11.toByte())
         p.feed(*handshakeBytes().toTypedArray())
         p.feed(fbUpdate(tile))
         p.client.run()
@@ -243,5 +256,54 @@ class RfbClientTest {
         val ks = ((key[4].toInt() and 0xFF) shl 24) or ((key[5].toInt() and 0xFF) shl 16) or
             ((key[6].toInt() and 0xFF) shl 8) or (key[7].toInt() and 0xFF)
         assertEquals("keysym A", 0x41, ks)
+    }
+
+    @Test fun hextile_raw_tile_consumes_32bit_pixels() {
+        // RFC 6143 subencoding bit 0x01 = Raw: the tile's pixel data is appended in the
+        // server's pixel format (32bpp BGRA here). Reading it as 3-byte RGB triples consumes
+        // 12 bytes for a 2x2 tile instead of 16 and desyncs every following rect.
+        val p = Pipe()
+        val tile = byteArrayOf(0x01.toByte(),                            // subencoding: Raw
+            0x33.toByte(), 0x22.toByte(), 0x11.toByte(), 0x00.toByte(),   // (0,0) R=11 G=22 B=33
+            0x44.toByte(), 0x55.toByte(), 0x66.toByte(), 0x00.toByte(),   // (1,0)
+            0x77.toByte(), 0x88.toByte(), 0x99.toByte(), 0x00.toByte(),   // (0,1)
+            0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte(), 0x00.toByte())   // (1,1)
+        p.feed(*handshakeBytes().toTypedArray())
+        p.feed(fbUpdate(rectHeader(0, 0, 2, 2, -6) + tile))
+        p.client.run()
+        assertEquals(0xFF112233.toInt(), p.client.pixels[0])
+        assertEquals(0xFF665544.toInt(), p.client.pixels[1])
+        assertEquals(0xFF998877.toInt(), p.client.pixels[4])
+        assertEquals(0xFFCCBBAA.toInt(), p.client.pixels[5])
+    }
+
+    @Test fun hextile_background_and_foreground_bits() {
+        // 0x02 = BackgroundSpecified, 0x04 = ForegroundSpecified, 0x08 = AnySubrects.
+        // The old decoder read Background on 0x01 and Foreground on 0x02.
+        val p = Pipe()
+        val tile = byteArrayOf((0x02 or 0x04 or 0x08).toByte(),   // bg + fg + subrects
+            0x11.toByte(), 0x22.toByte(), 0x33.toByte(),          // bg RGB
+            0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte(),          // fg RGB
+            0x01.toByte(),                                        // 1 subrect
+            0x02.toByte(),                                        // subrect uses foreground
+            0x11.toByte(),                                        // x=1, y=1
+            0x00.toByte())                                        // w=1, h=1
+        p.feed(*handshakeBytes().toTypedArray())
+        p.feed(fbUpdate(rectHeader(0, 0, 2, 2, -6) + tile))
+        p.client.run()
+        assertEquals(0xFF112233.toInt(), p.client.pixels[0])  // bg
+        assertEquals(0xFF112233.toInt(), p.client.pixels[1])
+        assertEquals(0xFFAABBCC.toInt(), p.client.pixels[5])  // subrect at (1,1)
+    }
+
+    @Test fun out_of_bounds_rect_is_fatal() {
+        // Framebuffer is 4x2. A rect at x=2 w=4 runs past the right edge — that is a desync,
+        // and continuing prints garbage for the rest of the session.
+        val p = Pipe()
+        p.feed(*handshakeBytes().toTypedArray())
+        p.feed(fbUpdate(rectHeader(2, 0, 4, 2, 0) + ByteArray(4 * 2 * 4)))
+        p.client.run()
+        assertTrue("rect bounds rejected",
+            (p.client.lastError ?: "").contains("rect out of bounds"))
     }
 }
