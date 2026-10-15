@@ -141,14 +141,10 @@ class RfbClient(
         pixels = IntArray(width * height)
         Log.d(TAG, "ServerInit ${width}x$height '$desktopName'")
 
-        // SetPixelFormat: 32bpp, depth 24, little-endian, truecolor, rgb888 @ 16/8/0
-        val pf = ByteArray(20)
-        pf[0] = 0
-        pf[4] = 32; pf[5] = 24; pf[6] = 0; pf[7] = 1
-        pf[8] = 0xFF.toByte(); pf[9] = 0; pf[10] = 0xFF.toByte(); pf[11] = 0
-        pf[12] = 0xFF.toByte(); pf[13] = 0
-        pf[14] = 16; pf[15] = 8; pf[16] = 0
-        send(pf)
+        // No SetPixelFormat. Xvnc's default is already 32bpp depth-24 little-endian
+        // rgb888 @ 16/8/0 — the format we want — and TigerVNC closes the link on the
+        // packet we used to send ("VNCSConnST: closing rfb.sock: invalid pixel format"),
+        // which is why the bridge connected and the screen stayed black.
 
         // SetEncodings: Tight, TightPng, CopyRect, Raw.
         // TigerVNC's Xvnc numbering (proved against the live socket, NOT RFC 6143):
@@ -342,6 +338,18 @@ class RfbClient(
 
     private fun decodeTight(x: Int, y: Int, w: Int, h: Int, pngAllowed: Boolean) {
         val ctrl = read(1)[0].toInt() and 0xFF
+        // Tight's Fill special case: when the TOP THREE bits of the control byte are
+        // zero, the rect is a solid colour — three RGB bytes follow and there is no
+        // palette, no zlib, no stream. A desktop that opens with a blank background
+        // sends exactly ctrl=0x00, so routing that to the basic path asks for a
+        // palette that was never sent ("tight: no palette for stream 0") and the
+        // screen stays black.
+        if (ctrl and 0xE0 == 0) {
+            val s = (y / 16 + x / 16) % 4
+            fillRect(y * width + x, w, h, argbFromRgb(read(3)))
+            tightPaletteReady[s] = false
+            return
+        }
         when ((ctrl shr 6) and 3) {
             3 -> copyFromHistory(x, y, w, h)
             1, 2 -> decodeTightImage(x, y, w, h)
