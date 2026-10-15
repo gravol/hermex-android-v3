@@ -1,3 +1,24 @@
+## v0.1.883 (vc29) — 2026-10-15
+- **Hextile subencoding bits corrected to RFC 6143.** `decodeHextile` read Background on
+  bit `0x01` and Foreground on `0x02`. The spec is `0x01` Raw, `0x02` Background, `0x04`
+  Foreground, `0x08` AnySubrects, `0x10` SubrectsColoured. A Raw tile made the decoder
+  consume 3 bytes where the server sends `tileW*tileH*4` — instant stream desync. Latent
+  because Xvnc only advertises Raw/CopyRect/Tight/TightPng, so Hextile never arrives in
+  practice. Raw tiles are 32bpp BGRA, not 3-byte RGB triples.
+- **Rectangle bounds guard.** Server rectangles are now validated against the framebuffer.
+  The handshake bounds the allocation, not each rect, so a desynced stream can produce a
+  rect that writes past the framebuffer. Out-of-bounds is treated as fatal — continuing
+  prints garbage for the rest of the session.
+- **Published frame snapshot.** The decoder writes `pixels`, then copies into a `published`
+  array under a lock after the WHOLE update. `blitTo` reads the snapshot. Previously the UI
+  read the decoder's live buffer, so a render could copy pixels from different stages of an
+  update (tearing / partial frame), and `frameSeq` being volatile gave visibility of the
+  counter, not atomicity of the array.
+- **Bot Screen text box caption.** The box sends keystrokes to the focused field on the
+  desktop; it is not a chat message. Label and caption changed after that was misread.
+- Found by having a frontier model read the source from the public GitHub repo. 14 unit
+  tests, 0 failures.
+
 ## v0.1.882 (vc28) — 2026-10-15
 - **Bot Screen renders the desktop on the phone for the first time.** Four bugs,
   found by reading Xvnc's own log (`~/.hermes/bot-desktop/launcher.log`) and the
