@@ -1,3 +1,49 @@
+## v0.1.882 (vc28) — 2026-10-15
+- **Bot Screen renders the desktop on the phone for the first time.** Four bugs,
+  found by reading Xvnc's own log (`~/.hermes/bot-desktop/launcher.log`) and the
+  app's `RfbClient` logcat, then capturing 5.18 MB of the live `rfb.sock` stream
+  and decoding it offline before rebuilding.
+- **The desync: a zero-size Tight/TightPng rect carries EXACTLY ONE byte** — the
+  flush code (0x21 flush the zlib stream, 0x22 flush + drop its palette, anything
+  else a no-op). The decoder read zero bytes, leaving one byte per opcode, so every
+  following rect header landed one byte off: `unhandled encoding -350941171`,
+  `unknown server msg 235`, black screen.
+- **Tight control-byte layout corrected:** bits 7-5 = compression type (000 Fill,
+  001 Basic, 010 JPEG, 011 PNG, 100 CopyFromHistory), bits 4-3 = filter id, bits 2-0
+  = compression level. The old decoder read bits 7-6 as the type and bit 5 as
+  "explicit palette" — bit 5 belongs to the type field, so every basic rect made it
+  consume palette bytes that were never sent. Fill is the top three bits zero (3 RGB
+  bytes, no palette, no zlib). Level 0 is uncompressed TPI; levels 1-4 are zlib with
+  `2^level` colours. Gradient filter added.
+- Verified on the Pixel: desktop renders, `Take over` → `Hand back` +
+  `type for the bot…` + `Send`, pointer moves to the tapped point.
+
+## v0.1.881 (vc27) — 2026-10-15
+- **Dropped the `SetPixelFormat` packet.** The client sent it as message type 0 and
+  Xvnc closed the link: `VNCSConnST: closing rfb.sock: invalid pixel format`. The
+  server default is already 32bpp depth-24 little-endian rgb888 @ 16/8/0 — the
+  format we want — so the packet is unnecessary. Handshake then completed:
+  `ServerInit 1440x900 'hermes:default'`.
+- **Tight Fill special case:** control byte `0x00` is a solid-colour rect (3 RGB
+  bytes), not a palette request. A desktop opening on a blank background sends
+  exactly that, and the basic path threw `tight: no palette for stream 0`.
+
+## v0.1.880 (vc26) — 2026-10-15
+- Speak TigerVNC's protocol numbering (client messages are NOT RFC 6143:
+  `SetEncodings=2`, `FramebufferUpdateRequest=3` — proved by the server log reading
+  our packet as `FBUR 192x65535 at 4,0`) and decode Tight zlib.
+
+## v0.1.879 (vc25) — 2026-10-14
+- **Fixed the Bot Screen OOM crash.** `ServerInit` is 24 bytes (width, height,
+  16-byte pixel format, name length), not 32. Reading 32 swallowed the name length
+  and the first name bytes, so the "name length" landed on ASCII and asked for a
+  1.7 GB allocation. Geometry/name-length are now sanity-checked and a desync is
+  reported by name instead of crashing.
+
+## v0.1.878 (vc24) — 2026-10-14
+- Bot Screen: fix RFB parser EOF-on-empty-poll, `connect()` re-entrance, WS ping
+  timeout.
+
 ## v0.1.875 (vc21) — 2026-10-14
 - **Copy a URL out of a message without copying the whole message.** The
   long-press Reply/Copy dialog now detects every `http(s)://` URL in the message
