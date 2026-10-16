@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.hermex.v3.di.AppModule
 import com.hermex.core.network.DashboardApiClient
 import com.hermex.core.network.DebugLog
 import com.hermex.core.network.JsonRpcClient
@@ -66,8 +67,9 @@ class BotScreenEngine(application: Application) : AndroidViewModel(application) 
     var frames by androidx.compose.runtime.mutableStateOf(0L)
         private set
 
-    private val wsConnection = WsConnectionManager(viewModelScope)
-    private val rpc = JsonRpcClient(wsConnection, viewModelScope)
+    // v0.1.885: shared app-wide connection — see AppModule.provideWsConnection.
+    private val wsConnection = AppModule.provideWsConnection()
+    private val rpc = AppModule.provideRpcClient()
 
     // No pingInterval: the bridge answers RFB frames, not WS control frames, and OkHttp
     // fails the socket after one unanswered ping ("didn't receive pong within 20000ms").

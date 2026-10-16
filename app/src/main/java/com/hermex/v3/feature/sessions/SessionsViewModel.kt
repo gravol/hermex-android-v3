@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermex.v3.feature.settings.SettingsRepository
+import com.hermex.v3.di.AppModule
 import com.hermex.core.network.DebugLog
 import com.hermex.core.network.JsonRpcClient
 import com.hermex.core.network.RpcNotification
@@ -34,13 +35,13 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     private val settingsRepo = SettingsRepository(application)
 
     /**
-     * Persistent RPC client used to observe `sessions.changed` broadcasts. A
-     * dedicated WS connection lives for the ViewModel's lifetime so session-list
-     * changes reach us without a full reconnect (see [init]).
+     * v0.1.885: the app-wide shared connection. One WebSocket for the whole app —
+     * this ViewModel subscribes to its notification broadcast for `sessions.changed`.
+     * The old per-ViewModel observer opened its own socket, so every screen had a
+     * socket and the gateway delivered every event to all of them.
      */
-    private var observerWs: WsConnectionManager? = null
-    private var observerClient: JsonRpcClient? = null
-    private var observerReady = false
+    private val sharedWs = AppModule.provideWsConnection()
+    private val sharedRpc = AppModule.provideRpcClient()
 
     /** Locally pinned session ids (desktop-style client-side pinning). */
     val pinnedIds: StateFlow<Set<String>> = settingsRepo.pinnedSessionIds
@@ -48,61 +49,39 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
 
     init {
         loadSessions()
-        // Establish ONE persistent observer connection for the ViewModel's
-        // lifetime and keep watching for `sessions.changed` broadcasts. The
-        // dashboard fires this after any external session-list change (cron
-        // runs, other clients, turn completion). Without refetching on it the
-        // cached list goes stale — which is exactly why Insights showed "no
-        // usage data" even after the gateway started returning token counts.
-        //
-        // v0.1.172: this connection lives for the ViewModel's lifetime and is
-        // REUSED across every reload. The old code opened a fresh throwaway WS
-        // + ticket on each `sessions.changed` when the observer wasn't instantly
-        // live, then disconnected — so frequent broadcasts spun up one socket per
-        // reload, racing the reap window and thrashing the brute-force throttle.
-        // Reusing one socket (reconnecting in place if it dies) removes that churn.
+        // Establish the shared connection and watch `sessions.changed` broadcasts.
+        // The dashboard fires this after any external session-list change (cron runs,
+        // other clients, turn completion). Without refetching on it the cached list
+        // goes stale — which is exactly why Insights showed "no usage data" even
+        // after the gateway started returning token counts.
         viewModelScope.launch {
             try {
-                val ws = WsConnectionManager(viewModelScope)
-                ws.connect()
-                observerClient = JsonRpcClient(ws, viewModelScope).apply { start() }
-                observerWs = ws
-                observerReady = true
-            } catch (_: Exception) {
-                observerClient = null
-                observerWs = null
-                observerReady = false
+                sharedWs.connect()
+                sharedRpc.start()
+            } catch (e: Exception) {
+                DebugLog.log("ERROR", "SessionsVM", "shared connect failed: ${e.message}")
             }
-            if (observerClient != null) {
-                observerClient!!.notifications.collect { n ->
-                    if (n is RpcNotification.SessionChanged) {
-                        DebugLog.log("INFO", "SessionsVM", "sessions.changed → reload")
-                        loadDashboardSessions()
-                    }
+            sharedRpc.notifications.collect { n ->
+                if (n is RpcNotification.SessionChanged) {
+                    DebugLog.log("INFO", "SessionsVM", "sessions.changed → reload")
+                    loadDashboardSessions()
                 }
             }
         }
     }
 
-    /** Ensure a live observer socket, reconnecting in place if the old one died. */
-    private suspend fun ensureObserver(): WsConnectionManager? {
-        val existing = observerWs
-        if (existing != null && existing.isConnected) return existing
-        try {
-            val ws = WsConnectionManager(viewModelScope)
-            ws.connect()
-            observerClient = JsonRpcClient(ws, viewModelScope).apply { start() }
-            observerWs = ws
-            observerReady = true
-            DebugLog.log("INFO", "SessionsVM", "observer reconnected — live socket")
-            return ws
+    /** Ensure the shared connection is live, reconnecting in place if it died. */
+    private suspend fun ensureShared(): JsonRpcClient? {
+        if (sharedWs.isConnected) return sharedRpc
+        return try {
+            sharedWs.connect()
+            sharedRpc.start()
+            DebugLog.log("INFO", "SessionsVM", "shared connection reconnected — live socket")
+            sharedRpc
         } catch (e: Exception) {
-            Log.e("Hermex", "SessionsViewModel: observer reconnect failed", e)
-            DebugLog.log("ERROR", "SessionsVM", "observer reconnect failed: ${e.message}")
-            observerClient = null
-            observerWs = null
-            observerReady = false
-            return null
+            Log.e("Hermex", "SessionsViewModel: shared reconnect failed", e)
+            DebugLog.log("ERROR", "SessionsVM", "shared reconnect failed: ${e.message}")
+            null
         }
     }
 
@@ -124,16 +103,13 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         if (_uiState.value.isCreating) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isCreating = true, error = null)
-            val wsConnection = WsConnectionManager(viewModelScope)
             try {
-                wsConnection.connect()
-                val rpcClient = JsonRpcClient(wsConnection, viewModelScope)
-                rpcClient.start()
+                val rpc = ensureShared() ?: throw Exception("connection unavailable")
                 // v0.1.88: apply the user's model/effort pick (sticky, like the
                 // desktop composer) to the new session.
                 val modelPick = settingsRepo.modelPick.first().ifBlank { null }
                 val reasoningPick = settingsRepo.reasoningPick.first().ifBlank { null }
-                val sid = rpcClient.createSession(model = modelPick, reasoningEffort = reasoningPick)
+                val sid = rpc.createSession(model = modelPick, reasoningEffort = reasoningPick)
                 DebugLog.log("INFO", "SessionsVM",
                     "session.create → $sid (model=$modelPick effort=$reasoningPick)")
                 onDone(sid)
@@ -145,7 +121,6 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                 )
                 onDone(null)
             } finally {
-                wsConnection.disconnect()
                 _uiState.value = _uiState.value.copy(isCreating = false)
             }
         }
@@ -155,12 +130,9 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     fun deleteSession(sessionId: String, onDone: () -> Unit) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(deleting = true, error = null)
-            val wsConnection = WsConnectionManager(viewModelScope)
             try {
-                wsConnection.connect()
-                val rpcClient = JsonRpcClient(wsConnection, viewModelScope)
-                rpcClient.start()
-                rpcClient.sessionDelete(sessionId)
+                val rpc = ensureShared() ?: throw Exception("connection unavailable")
+                rpc.sessionDelete(sessionId)
                 DebugLog.log("INFO", "SessionsVM", "session.delete → $sessionId")
                 _uiState.value = _uiState.value.copy(deleting = false)
                 loadSessions()
@@ -173,8 +145,6 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                     error = e.message ?: "Failed to delete session",
                 )
                 onDone()
-            } finally {
-                wsConnection.disconnect()
             }
         }
     }
@@ -218,8 +188,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         // dispatched, and it timed out at 30s (every "observer reconnected"
         // line in field logs was followed by exactly that). ensureObserver()
         // already installs a started observerClient — use it, don't clone.
-        val liveClient = observerClient?.takeIf { it.isConnected }
-            ?: ensureObserver()?.let { observerClient }
+        val liveClient = sharedRpc.takeIf { sharedWs.isConnected } ?: ensureShared()
         if (liveClient == null) {
             DebugLog.log("ERROR", "SessionsVM", "no observer socket — session.list deferred")
             _uiState.value = _uiState.value.copy(

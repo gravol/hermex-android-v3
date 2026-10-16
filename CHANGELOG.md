@@ -1,3 +1,29 @@
+## v0.1.885 (vc31) — 2026-10-16
+- **One WebSocket for the whole app.** `WsConnectionManager` was constructed per screen:
+  4 sites in `SessionsViewModel`, one per chat session in `ChatVmsHolder` ("one WS per
+  session"), plus `SoulScreen`, `BotScreenEngine` and `NotificationReplyService`. The
+  gateway delivers every event to every socket, so the same delta lands N times —
+  doubled words and sentences in chat. Worse, `session.resume` on a second socket
+  re-attaches the session to that socket, so a running turn's events go to a connection
+  where no chat ViewModel is listening: the turn runs and never shows up.
+  Fix: `AppModule.provideWsConnection()` / `provideRpcClient()` are app-wide singletons
+  on a `SupervisorJob` scope (a ViewModel scope dies when the ViewModel clears). No
+  screen disconnects the shared socket any more — one VM clearing must not drop
+  everyone's connection, and the server's orphan-reaper tears a running session down
+  20 s after a disconnect.
+- **Notifications are a broadcast.** `JsonRpcClient.notifications` was
+  `Channel.receiveAsFlow()` — a single-consumer flow, so with the shared client the chat
+  VM, the sessions observer and the reply service split events between them and the chat
+  bubble silently missed deltas. Now a `MutableSharedFlow` (buffer 1024, drop-oldest):
+  every subscriber gets every event. `serverRequests` stays a single-consumer channel —
+  a server→client request must be answered exactly once.
+- **`connect()` is single-flight.** Every screen's `LaunchedEffect` calls `connect()` on
+  entry, so app launch fired several at the same millisecond. The state check was
+  check-then-act and every caller passed it: logcat 2026-10-15 20:29:29.658 shows two
+  `connect()` lines, two tickets, two `onOpen` from one fresh process. A `Mutex` now
+  serializes `connect()`/`forceConnect()`; a caller arriving mid-connect waits for the
+  in-flight socket instead of opening its own.
+
 ## v0.1.884 (vc30) — 2026-10-16
 - **Doubled words and sentences in chat: duplicate WebSocket sockets.** One app instance
   was holding 6 live sockets to the gateway at once (`ss -tnp` on BigRed, 2026-10-16).

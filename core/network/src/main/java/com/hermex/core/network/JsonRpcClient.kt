@@ -7,7 +7,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.Channel.Factory.UNLIMITED
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
@@ -61,10 +63,18 @@ class JsonRpcClient(
     @PublishedApi
     internal val pendingRequests = ConcurrentHashMap<Long, kotlinx.coroutines.CancellableContinuation<JsonElement>>()
 
-    // Separate channel for notifications to avoid backpressure on the WS message flow
-    private val notificationChannel = Channel<RpcNotification>(UNLIMITED)
+    // v0.1.885: notifications are a BROADCAST, not a single-consumer channel.
+    // `receiveAsFlow()` on a Channel hands each frame to exactly ONE collector, so with
+    // the shared app-wide client the chat VM, the sessions observer and the
+    // notification-reply service would split events between them — the chat bubble
+    // silently misses deltas and a turn never renders. A SharedFlow hands every event
+    // to every subscriber. Buffer is generous: a burst of coalesced deltas is ~30/sec.
+    private val notificationFlow = MutableSharedFlow<RpcNotification>(
+        extraBufferCapacity = 1024,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     /** Server-pushed events (message.delta, tool.started, approval.request, etc.). */
-    val notifications: Flow<RpcNotification> = notificationChannel.receiveAsFlow()
+    val notifications: Flow<RpcNotification> = notificationFlow
 
     /**
      * Server→client JSON-RPC requests: the backend asks a question and waits for one
@@ -469,7 +479,7 @@ class JsonRpcClient(
             DebugLog.log("RPC", "Clarify", "forwarding to ViewModel: requestId=${notification.requestId}")
         }
 
-        notificationChannel.trySend(notification)
+        notificationFlow.tryEmit(notification)
     }
 
     // ── v1 convenience methods ──

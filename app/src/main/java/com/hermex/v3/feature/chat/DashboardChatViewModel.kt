@@ -8,6 +8,7 @@ import kotlin.runCatching
 import com.hermex.v3.feature.settings.SettingsRepository
 import com.hermex.v3.service.WsKeepaliveService
 import com.hermex.v3.notify.NotificationHelper
+import com.hermex.v3.di.AppModule
 import com.hermex.core.network.DashboardApiClient
 import com.hermex.core.network.NetworkResult
 import androidx.compose.runtime.getValue
@@ -78,8 +79,10 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     private var turnNotifPosted = false
 
     // WebSocket + JSON-RPC infrastructure
-    private val wsConnection = WsConnectionManager(viewModelScope)
-    private val rpcClient = JsonRpcClient(wsConnection, viewModelScope)
+    // v0.1.885: shared app-wide connection. One socket for the whole app — see
+    // AppModule.provideWsConnection for why per-screen managers doubled events.
+    private val wsConnection = AppModule.provideWsConnection()
+    private val rpcClient = AppModule.provideRpcClient()
     /** Set by /new or /reset — ChatScreen observes it and navigates to the fresh session. */
     override var resetTargetSession: String? by mutableStateOf(null)
     private var notificationCollectorJob: Job? = null
@@ -1105,16 +1108,19 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     }
 
     /**
-     * Tear down this chat ViewModel's live connection. Called by [ChatVmsHolder]
+     * Tear down this chat ViewModel's subscriptions. Called by [ChatVmsHolder]
      * when the Activity finishes (chat VMs now outlive navigation so turns keep
-     * running in the background). Keepalive service is NOT stopped here — the
-     * holder stops it once every session's VM is disposed.
+     * running in the background).
+     *
+     * v0.1.885: does NOT disconnect. The connection is app-wide and shared by every
+     * chat session, the sessions list, soul screen and bot screen — one VM clearing
+     * must not drop everyone's socket, and the server's orphan-reaper tears down a
+     * running session 20s after a disconnect.
      */
     fun dispose() {
         notificationCollectorJob?.cancel()
         serverRequestCollectorJob?.cancel()
         staleStreamTimeoutJob?.cancel()
-        wsConnection.disconnect()
     }
 
     // ── v0.1.123 stuck-spinner watchdog ──

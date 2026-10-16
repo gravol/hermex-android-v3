@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
+import com.hermex.v3.di.AppModule
 import com.hermex.core.network.DebugLog
 import com.hermex.core.network.JsonRpcClient
 import com.hermex.core.network.WsConnectionManager
@@ -131,8 +132,9 @@ class SoulViewModel(application: Application) : AndroidViewModel(application) {
         get() = uiState.soul
         set(v) { uiState = uiState.copy(soul = v, saved = false) }
 
-    private val wsConnection = WsConnectionManager(viewModelScope)
-    private val rpcClient = JsonRpcClient(wsConnection, viewModelScope)
+    // v0.1.885: shared app-wide connection — see AppModule.provideWsConnection.
+    private val wsConnection = AppModule.provideWsConnection()
+    private val rpcClient = AppModule.provideRpcClient()
 
     init {
         reload()
@@ -179,8 +181,8 @@ class SoulViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        rpcClient.stop()
-        wsConnection.disconnect()
+        // v0.1.885: the connection is app-wide. Leaving this screen must not stop the
+        // shared client or drop every other screen's socket.
         super.onCleared()
     }
 }

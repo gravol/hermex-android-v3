@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -48,6 +50,11 @@ class WsConnectionManager(
     private var reconnectJob: Job? = null
     private var isUserDisconnect = false
 
+    /** v0.1.884: serializes connect()/forceConnect() so exactly one socket is
+     *  in flight. Every screen calls connect() on entry; the state check alone
+     *  is check-then-act and lets all of them through. */
+    private val connectMutex = Mutex()
+
     // v0.1.170 fix: capabilities() needs its OWN id space, never the request-counter range.
     // advertiseCapabilities() fires from onOpen() on every fresh connection BEFORE any real
     // request; if it reused a request id (it used a hardcoded 1, colliding with the first
@@ -79,27 +86,46 @@ class WsConnectionManager(
 
     // ── Public API ──
 
-    /** Full auth chain: ensure logged in → fetch ticket → open WS. Blocks until connected. */
+    /** Full auth chain: ensure logged in → fetch ticket → open WS. Blocks until connected.
+     *
+     *  v0.1.884: single-flight under a Mutex. `connect()` is called from every screen's
+     *  LaunchedEffect (SessionsViewModel, DashboardChatViewModel, SoulScreen, BotScreen,
+     *  NotificationReplyService), so app launch fires several at the same millisecond.
+     *  The old guard `if (state == Connected || Connecting) return` is check-then-act:
+     *  every caller passed it, so N tickets were fetched and N sockets opened — logcat
+     *  2026-10-15 20:29:29.658 shows two `connect()` lines, two tickets, two `onOpen`
+     *  from a single fresh process. Each socket receives every server event, and the
+     *  delta handler appends each delta with no dedupe, so chat text lands N times.
+     *  A caller that arrives mid-connect now waits on the mutex and returns once the
+     *  in-flight socket is Connected, instead of opening its own. */
     suspend fun connect() {
-        if (_state.value == State.Connected || _state.value == State.Connecting) return
-        isUserDisconnect = false
-        _state.value = State.Connecting
-        DebugLog.log("WS", "Connection", "connect() — fetching ticket")
-        Log.d("Hermex", "WsConnectionManager.connect()")
-
-        // Fetch fresh single-use ticket
-        val ticketResult = DashboardApiClient.fetchWsTicket()
-        when (ticketResult) {
-            is NetworkResult.Success -> {
-                DebugLog.log("WS", "Connection", "ticket fetched (ttl=${ticketResult.data.ttl_seconds}s)")
-                openWebSocket(ticketResult.data.ticket)
-                // Wait for the async WebSocket handshake to complete
+        connectMutex.withLock {
+            if (_state.value == State.Connected) return
+            isUserDisconnect = false
+            if (_state.value == State.Connecting) {
+                DebugLog.log("WS", "Connection", "connect() — connect already in flight, waiting for it")
+                Log.d("Hermex", "WsConnectionManager.connect(): in flight, waiting")
                 waitForConnection()
+                return
             }
-            is NetworkResult.Error, is NetworkResult.HttpError -> {
-                DebugLog.log("WS", "Connection", "ticket fetch failed — starting reconnect loop")
-                _state.value = State.Disconnected
-                startReconnectLoop()
+            _state.value = State.Connecting
+            DebugLog.log("WS", "Connection", "connect() — fetching ticket")
+            Log.d("Hermex", "WsConnectionManager.connect()")
+
+            // Fetch fresh single-use ticket
+            val ticketResult = DashboardApiClient.fetchWsTicket()
+            when (ticketResult) {
+                is NetworkResult.Success -> {
+                    DebugLog.log("WS", "Connection", "ticket fetched (ttl=${ticketResult.data.ttl_seconds}s)")
+                    openWebSocket(ticketResult.data.ticket)
+                    // Wait for the async WebSocket handshake to complete
+                    waitForConnection()
+                }
+                is NetworkResult.Error, is NetworkResult.HttpError -> {
+                    DebugLog.log("WS", "Connection", "ticket fetch failed — starting reconnect loop")
+                    _state.value = State.Disconnected
+                    startReconnectLoop()
+                }
             }
         }
     }
@@ -125,20 +151,23 @@ class WsConnectionManager(
      *  mid-session — e.g. a silent Tailscale drop leaves resume/submit retrying over a dead
      *  socket). Cancels any pending reconnect loop first so there's exactly one active socket. */
     suspend fun forceConnect() {
-        reconnectJob?.cancel(); reconnectJob = null
-        if (isUserDisconnect) return
-        _state.value = State.Connecting
-        DebugLog.log("WS", "Connection", "forceConnect() — fresh socket")
-        val ticketResult = DashboardApiClient.fetchWsTicket()
-        when (ticketResult) {
-            is NetworkResult.Success -> {
-                openWebSocket(ticketResult.data.ticket)
-                waitForConnection()
-            }
-            is NetworkResult.Error, is NetworkResult.HttpError -> {
-                DebugLog.log("WS", "Connection", "forceConnect ticket failed — reconnect loop")
-                _state.value = State.Disconnected
-                startReconnectLoop()
+        connectMutex.withLock {
+            reconnectJob?.cancel(); reconnectJob = null
+            if (isUserDisconnect) return
+            _state.value = State.Connecting
+            DebugLog.log("WS", "Connection", "forceConnect() — fresh socket")
+            Log.d("Hermex", "WsConnectionManager.forceConnect() — fresh socket")
+            val ticketResult = DashboardApiClient.fetchWsTicket()
+            when (ticketResult) {
+                is NetworkResult.Success -> {
+                    openWebSocket(ticketResult.data.ticket)
+                    waitForConnection()
+                }
+                is NetworkResult.Error, is NetworkResult.HttpError -> {
+                    DebugLog.log("WS", "Connection", "forceConnect ticket failed — reconnect loop")
+                    _state.value = State.Disconnected
+                    startReconnectLoop()
+                }
             }
         }
     }
@@ -198,8 +227,10 @@ class WsConnectionManager(
         webSocket = null
         if (stale != null) {
             DebugLog.log("WS", "Connection", "closing superseded socket (gen ${myGen - 1})")
+            Log.w("Hermex", "WsConnectionManager: closing superseded socket gen=${myGen - 1}")
             runCatching { stale.close(1000, "superseded by fresh socket") }
         }
+        Log.d("Hermex", "WsConnectionManager: opening socket gen=$myGen")
 
         webSocket = wsClient.newWebSocket(request, object : WebSocketListener() {
             /** True while this listener's generation is the live one. Stale sockets
@@ -210,6 +241,7 @@ class WsConnectionManager(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (!isCurrent()) {
                     DebugLog.log("WS", "Connection", "onOpen on superseded socket (gen $myGen) — ignored")
+                    Log.w("Hermex", "WsConnectionManager: onOpen on superseded socket gen=$myGen — ignored")
                     return
                 }
                 Log.d("Hermex", "WsConnectionManager: onOpen")
@@ -238,6 +270,7 @@ class WsConnectionManager(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (!isCurrent()) {
                     DebugLog.log("WS", "Connection", "onClosed on superseded socket (gen $myGen) — ignored")
+                    Log.w("Hermex", "WsConnectionManager: onClosed on superseded socket gen=$myGen — ignored")
                     return
                 }
                 Log.d("Hermex", "WsConnectionManager: onClosed code=$code reason=$reason")
@@ -251,6 +284,7 @@ class WsConnectionManager(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (!isCurrent()) {
                     DebugLog.log("WS", "Connection", "onFailure on superseded socket (gen $myGen) — ignored")
+                    Log.w("Hermex", "WsConnectionManager: onFailure on superseded socket gen=$myGen — ignored")
                     return
                 }
                 Log.e("Hermex", "WsConnectionManager: onFailure", t)

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import com.hermex.v3.di.AppModule
 import com.hermex.core.network.DebugLog
 import com.hermex.core.network.JsonRpcClient
 import com.hermex.core.network.RpcNotification
@@ -123,14 +124,16 @@ class NotificationReplyService : Service() {
     }
 
     private suspend fun runReply(sessionKey: String, title: String, reply: String) {
-        var ws: WsConnectionManager? = null
         try {
             DebugLog.log("REPLY", "Service", "reply to $sessionKey: ${reply.take(60)}")
 
-            // Same stack the chat VM uses — fresh ticket, one-shot connection.
-            val conn = WsConnectionManager(serviceScope)
-            ws = conn
-            val rpc = JsonRpcClient(conn, serviceScope)
+            // v0.1.885: reuse the app-wide shared connection. The old one-shot
+            // connection opened a second socket, and `session.resume` on it
+            // re-attached the session to the service's socket — the running turn's
+            // events then went there, where no chat ViewModel is listening, so the
+            // turn never rendered on screen.
+            val conn = AppModule.provideWsConnection()
+            val rpc = AppModule.provideRpcClient()
             withTimeout(CONNECT_TIMEOUT_MS) { conn.connect() }
             rpc.start()
 
@@ -162,7 +165,8 @@ class NotificationReplyService : Service() {
             DebugLog.log("REPLY", "Service", "reply failed: ${e.message}")
             NotificationHelper.postReplyFailed(this, sessionKey, title)
         } finally {
-            runCatching { ws?.disconnect() }
+            // v0.1.885: never disconnect — the connection is app-wide and the chat
+            // VM is watching the same socket.
             stopSelf()
         }
     }
