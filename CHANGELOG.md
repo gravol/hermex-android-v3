@@ -1,3 +1,22 @@
+## v0.1.884 (vc30) — 2026-10-16
+- **Doubled words and sentences in chat: duplicate WebSocket sockets.** One app instance
+  was holding 6 live sockets to the gateway at once (`ss -tnp` on BigRed, 2026-10-16).
+  Every socket receives every server event, and the delta handler appends each delta
+  text into the streaming bubble with no dedupe — so the same words land N times.
+  Root cause is a check-then-act race in `startReconnectLoop()`: the guard
+  `if (reconnectJob?.isActive == true) return` is read on OkHttp's callback threads, so
+  when several sockets die in the same millisecond (the gateway's 20s keepalive ping
+  kills them all at once) every `onClosed` passes the guard before any assignment
+  lands. Gateway log 2026-10-16 03:21:35: three sockets accepted in 3ms.
+  Fix: `@Synchronized` on the reconnect guard, a per-socket generation number, and the
+  superseded socket is closed BEFORE a new one opens. Stale listeners can no longer
+  touch shared state, fire the capabilities advert, replay `session.resume`, or spawn
+  a reconnect loop.
+- **`client.capabilities` ack logged as a failure.** The advert is fire-and-forget, so
+  its reply hit `no pending request (stale/timed out)` on every connection. Five such
+  lines read as a broken connection. Ids are now registered as fire-and-forget and the
+  ack logs as `fire-and-forget ack`.
+
 ## v0.1.883 (vc29) — 2026-10-15
 - **Hextile subencoding bits corrected to RFC 6143.** `decodeHextile` read Background on
   bit `0x01` and Foreground on `0x02`. The spec is `0x01` Raw, `0x02` Background, `0x04`

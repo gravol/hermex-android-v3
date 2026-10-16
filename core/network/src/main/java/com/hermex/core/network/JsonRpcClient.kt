@@ -265,6 +265,11 @@ class JsonRpcClient(
         if (cont != null) {
             DebugLog.log("RPC", "Response", "[$id] resolved")
             cont.resume(result)
+        } else if (connection.fireAndForgetIds.remove(id)) {
+            // Expected: a fire-and-forget request (capabilities advertisement) has no
+            // continuation. Logging it as "stale/timed out" made a healthy connection
+            // look broken in the debug dump.
+            DebugLog.log("RPC", "Response", "[$id] fire-and-forget ack")
         } else {
             DebugLog.log("RPC", "Response", "[$id] no pending request (stale/timed out)")
         }

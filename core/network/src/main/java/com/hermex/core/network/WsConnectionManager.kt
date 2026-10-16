@@ -56,6 +56,20 @@ class WsConnectionManager(
     // and session.create got no session_id. Start high so it can never collide with request ids.
     private val capabilitiesCounter = java.util.concurrent.atomic.AtomicLong(1_000_000)
 
+    // v0.1.884: every socket we open gets a generation number. A listener only drives
+    // state when its own generation is still the current one. Without this, sockets
+    // opened by earlier reconnect rounds stay alive untracked: each fires onOpen
+    // (capabilities advertisement), each fires onClosed later (a brand-new reconnect
+    // loop), and each replays session.resume — so one turn-end notification reaches
+    // the phone several times. Debug log 2026-10-15 16:46:53 shows 5 reconnect loops
+    // starting in the same 2ms and 5 sockets reporting "connected!".
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Ids sent fire-and-forget (capabilities advertisement). The server replies, and
+     *  there is no continuation to resume, so [JsonRpcClient] must not read the reply
+     *  as a stale/timed-out request. */
+    internal val fireAndForgetIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
     private val wsClient: OkHttpClient by lazy {
         DashboardApiClient.httpClient().newBuilder()
             .pingInterval(300, TimeUnit.SECONDS)  // v0.1.74: 5-min liveness ping — the server never drops a silent WS (no read timeout) and streaming traffic verifies liveness anyway; 30s was ~10x more radio wakeups than needed
@@ -154,6 +168,12 @@ class WsConnectionManager(
 
     private fun advertiseCapabilities() {
         val id = capabilitiesCounter.getAndIncrement()
+        // v0.1.884: register the id as fire-and-forget. The server answers every
+        // request, and this one has no continuation registered, so its reply used to
+        // log as "[id] no pending request (stale/timed out)" on every connection —
+        // five of those lines in the 2026-10-15 log read as a connection failure and
+        // are really just the capabilities ack.
+        fireAndForgetIds.add(id)
         val frame = "{\"jsonrpc\":\"2.0\",\"id\":$id,\"method\":\"client.capabilities\",\"params\":{\"server_requests\":true}}"
         send(frame)
         DebugLog.log("WS", "Connection", "advertised client.capabilities {server_requests:true}")
@@ -169,8 +189,29 @@ class WsConnectionManager(
 
         val request = Request.Builder().url(wsUrl).build()
 
+        // v0.1.884: close the socket we are replacing BEFORE opening the new one, and
+        // stamp this socket's generation. Leaked sockets were the root cause of the
+        // duplicate-notification storm: they stay open, keep receiving every server
+        // event, and their onClosed starts additional reconnect loops.
+        val myGen = generation.incrementAndGet()
+        val stale = webSocket
+        webSocket = null
+        if (stale != null) {
+            DebugLog.log("WS", "Connection", "closing superseded socket (gen ${myGen - 1})")
+            runCatching { stale.close(1000, "superseded by fresh socket") }
+        }
+
         webSocket = wsClient.newWebSocket(request, object : WebSocketListener() {
+            /** True while this listener's generation is the live one. Stale sockets
+             *  must not touch shared state — they null the var, drop sends, and
+             *  spawn extra reconnect loops. */
+            private fun isCurrent(): Boolean = generation.get() == myGen
+
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!isCurrent()) {
+                    DebugLog.log("WS", "Connection", "onOpen on superseded socket (gen $myGen) — ignored")
+                    return
+                }
                 Log.d("Hermex", "WsConnectionManager: onOpen")
                 DebugLog.log("WS", "Connection", "onOpen — connected")
                 _state.value = State.Connected
@@ -184,6 +225,7 @@ class WsConnectionManager(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (!isCurrent()) return
                 messageChannel.trySend(text)
             }
 
@@ -194,6 +236,10 @@ class WsConnectionManager(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (!isCurrent()) {
+                    DebugLog.log("WS", "Connection", "onClosed on superseded socket (gen $myGen) — ignored")
+                    return
+                }
                 Log.d("Hermex", "WsConnectionManager: onClosed code=$code reason=$reason")
                 DebugLog.log("WS", "Connection", "onClosed code=$code")
                 this@WsConnectionManager.webSocket = null
@@ -203,6 +249,10 @@ class WsConnectionManager(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (!isCurrent()) {
+                    DebugLog.log("WS", "Connection", "onFailure on superseded socket (gen $myGen) — ignored")
+                    return
+                }
                 Log.e("Hermex", "WsConnectionManager: onFailure", t)
                 DebugLog.log("WS", "Connection", "onFailure: ${t.message} (http=${response?.code})")
                 this@WsConnectionManager.webSocket = null
@@ -213,6 +263,14 @@ class WsConnectionManager(
         })
     }
 
+    // v0.1.884: @Synchronized. The old guard was check-then-act across OkHttp's callback
+    // threads: when several sockets died in the same millisecond (keepalive ping timeout
+    // kills them all at once), every onClosed passed `reconnectJob?.isActive == true`
+    // before any assignment landed, so N reconnect loops started, N tickets were
+    // fetched, and N sockets came up — each replaying session.resume and each
+    // delivering the turn-end notification. Debug log 2026-10-15 16:46:53: 5 loops
+    // started within 2ms, 5 "attempt 1 — connected!" at 16:46:57.
+    @Synchronized
     private fun startReconnectLoop() {
         if (reconnectJob?.isActive == true) return
         if (isUserDisconnect) return
