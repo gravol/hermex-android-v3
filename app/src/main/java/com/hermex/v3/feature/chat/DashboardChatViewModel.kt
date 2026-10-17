@@ -1356,25 +1356,35 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                         // correct answer. Log the verdict; the reload below is
                                         // still the reconcile action until replay is wired.
                                         val liveSid = result.session_id
+                                        var replayed = false
                                         if (!liveSid.isNullOrEmpty()) {
                                             try {
                                                 val lastSeen = rpcClient.lastSeenSeqFor(liveSid)
                                                 val replay = rpcClient.sessionEventsSince(liveSid, lastSeen)
+                                                if (!replay.truncated && replay.events.isNotEmpty()) {
+                                                    rpcClient.replayEvents(replay.events)
+                                                    replayed = true
+                                                }
                                                 DebugLog.log("TRACE", "replay_decision",
                                                     "sid=${liveSid.take(8)} lastSeen=$lastSeen " +
                                                     "count=${replay.count} latest=${replay.latest_seq} " +
                                                     "truncated=${replay.truncated} " +
                                                     "open_requests=${replay.open_requests.size} " +
-                                                    "action=${if (replay.truncated) "full_reload" else "replay_then_reload"}")
-                                                if (!replay.truncated && replay.events.isNotEmpty()) {
-                                                    rpcClient.replayEvents(replay.events)
-                                                }
+                                                    "action=${if (replayed) "replay_only" else "full_reload"}")
                                             } catch (e: Exception) {
                                                 DebugLog.log("TRACE", "replay_decision",
                                                     "sid=${liveSid.take(8)} FAILED ${e.javaClass.simpleName}: ${e.message}")
                                             }
                                         }
-                                        loadMessages()
+                                        // Replay is load-bearing: when the ring carried every
+                                        // missed frame (not truncated), the replayed events
+                                        // already rendered the missing tool.complete / deltas,
+                                        // so the full-history refetch is skipped. Truncated,
+                                        // empty, or a failed replay call still fall back to the
+                                        // proven full reload.
+                                        if (!replayed) {
+                                            loadMessages()
+                                        }
                                     }
                                 } catch (e: Exception) {
                                     Log.e("Hermex", "DashboardChat: reconnect resume failed", e)
