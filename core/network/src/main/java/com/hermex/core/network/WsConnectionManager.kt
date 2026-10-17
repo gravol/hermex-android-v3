@@ -358,7 +358,10 @@ class WsConnectionManager(
 
             while (!isUserDisconnect) {
                 attempt++
-                val delayMs = min(30_000L, (2.0.pow(attempt.toDouble()) * 1000).toLong())
+                // Phase 0 measurement: the 2^n backoff capped at 30 s meant a mid-turn
+                // drop took 91 s to reach attempt 5 — the UI sat stale for a minute and
+                // a half. On a tailnet a reconnect is cheap, so cap the wait at 8 s.
+                val delayMs = min(8_000L, (2.0.pow(attempt.toDouble()) * 1000).toLong())
                 DebugLog.log("WS", "Reconnect", "attempt $attempt — waiting ${delayMs}ms")
                 Log.d("Hermex", "WsConnectionManager: reconnect attempt $attempt, delay=${delayMs}ms")
                 delay(delayMs)

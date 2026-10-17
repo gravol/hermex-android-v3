@@ -475,6 +475,16 @@ class JsonRpcClient(
                 info = params["payload"]?.jsonObject ?: params,
             )
 
+            "session.usage" -> RpcNotification.SessionInfo(
+                sessionId = sessionId ?: "",
+                // Phase 0: `session.usage` was landing in the `else` arm and being
+                // dropped (observed ×4 on device). Its payload carries
+                // usage.context_used/context_max, which is what the context gauge
+                // needs to live-update. Reuse the SessionInfo handler rather than
+                // inventing a new notification type.
+                info = params["payload"]?.jsonObject ?: params,
+            )
+
             "sessions.changed" -> RpcNotification.SessionChanged(
                 sessionId = sessionId,
             )
