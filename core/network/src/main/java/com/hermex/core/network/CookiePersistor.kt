@@ -38,7 +38,9 @@ class CookiePersistor(context: Context) {
             val cookies = (0 until arr.length()).mapNotNull { i ->
                 cookieFromJson(arr.getJSONObject(i))
             }
-            Log.d("Hermex", "CookiePersistor.load($host) → ${cookies.size} cookies: ${cookies.map { "${it.name}=${it.value.take(12)}..." }}")
+            // v0.1.889 (Phase 0): cookie values are live credentials. Names and counts
+            // only — the old line printed the first 12 chars of every value to logcat.
+            Log.d("Hermex", "CookiePersistor.load($host) → ${cookies.size} cookies: ${cookies.map { it.name }}")
             cookies
         } catch (_: Exception) {
             emptyList()
@@ -57,7 +59,8 @@ class CookiePersistor(context: Context) {
             arr.put(cookieToJson(cookie))
         }
         prefs.edit().putString(host, arr.toString()).apply()
-        Log.d("Hermex", "CookiePersistor.save($host) → ${cookies.size} cookies: ${cookies.map { "${it.name}=${it.value.take(12)}..." }}")
+        // v0.1.889 (Phase 0): names and counts only, never cookie values.
+        Log.d("Hermex", "CookiePersistor.save($host) → ${cookies.size} cookies: ${cookies.map { it.name }}")
     }
 
     /** Remove all persisted cookies. */

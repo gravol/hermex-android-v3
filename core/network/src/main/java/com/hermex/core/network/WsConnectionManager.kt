@@ -72,6 +72,21 @@ class WsConnectionManager(
     // starting in the same 2ms and 5 sockets reporting "connected!".
     private val generation = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /** Phase 0 trace (log-only, no behaviour change): every state transition, stamped
+     *  with the generation that caused it. The hypothesis under test is that a CONNECTED
+     *  edge never surfaces to the ViewModel's reconnect handler — so every edge, and
+     *  every suppressed edge, has to be explicit in the trace. */
+    private fun emitState(gen: Int, to: State, reason: String) {
+        val from = _state.value
+        DebugLog.log("TRACE", "state_emit", "gen=$gen ${from}→$to reason=$reason")
+        _state.value = to
+    }
+
+    /** A callback fired on a superseded generation and returned without touching state. */
+    private fun suppressState(gen: Int, reason: String) {
+        DebugLog.log("TRACE", "state_suppress", "gen=$gen reason=$reason state stays ${_state.value}")
+    }
+
     /** Ids sent fire-and-forget (capabilities advertisement). The server replies, and
      *  there is no continuation to resume, so [JsonRpcClient] must not read the reply
      *  as a stale/timed-out request. */
@@ -108,7 +123,7 @@ class WsConnectionManager(
                 waitForConnection()
                 return
             }
-            _state.value = State.Connecting
+            emitState(generation.get(), State.Connecting, "connect()")
             DebugLog.log("WS", "Connection", "connect() — fetching ticket")
             Log.d("Hermex", "WsConnectionManager.connect()")
 
@@ -123,7 +138,7 @@ class WsConnectionManager(
                 }
                 is NetworkResult.Error, is NetworkResult.HttpError -> {
                     DebugLog.log("WS", "Connection", "ticket fetch failed — starting reconnect loop")
-                    _state.value = State.Disconnected
+                    emitState(generation.get(), State.Disconnected, "connect ticket fetch failed")
                     startReconnectLoop()
                 }
             }
@@ -154,18 +169,18 @@ class WsConnectionManager(
         connectMutex.withLock {
             reconnectJob?.cancel(); reconnectJob = null
             if (isUserDisconnect) return
-            _state.value = State.Connecting
+            emitState(generation.get(), State.Connecting, "forceConnect()")
             DebugLog.log("WS", "Connection", "forceConnect() — fresh socket")
             Log.d("Hermex", "WsConnectionManager.forceConnect() — fresh socket")
             val ticketResult = DashboardApiClient.fetchWsTicket()
             when (ticketResult) {
                 is NetworkResult.Success -> {
-                    openWebSocket(ticketResult.data.ticket)
+                    openWebSocket(ticketResult.data.ticket, "forceConnect()")
                     waitForConnection()
                 }
                 is NetworkResult.Error, is NetworkResult.HttpError -> {
                     DebugLog.log("WS", "Connection", "forceConnect ticket failed — reconnect loop")
-                    _state.value = State.Disconnected
+                    emitState(generation.get(), State.Disconnected, "forceConnect ticket failed")
                     startReconnectLoop()
                 }
             }
@@ -179,7 +194,7 @@ class WsConnectionManager(
         reconnectJob = null
         webSocket?.close(1000, "Client disconnect")
         webSocket = null
-        _state.value = State.Disconnected
+        emitState(generation.get(), State.Disconnected, "disconnect() user initiated")
         DebugLog.log("WS", "Connection", "disconnect() — user initiated")
         Log.d("Hermex", "WsConnectionManager.disconnect()")
     }
@@ -209,12 +224,16 @@ class WsConnectionManager(
     }
     // ── Internal ──
 
-    private fun openWebSocket(ticket: String) {
+    private fun openWebSocket(ticket: String, reason: String = "connect") {
         val wsUrl = DashboardApiClient.wsBaseUrl()
             .trimEnd('/') + "/api/ws?ticket=$ticket"
 
-        DebugLog.log("WS", "Connection", "opening → $wsUrl")
-        Log.d("Hermex", "WsConnectionManager: opening $wsUrl")
+        // v0.1.889 (Phase 0): the ticket rides the WS URL as a query param, so the old
+        // Log.d line printed a live single-use ticket to logcat. DebugLog redacts
+        // [?&]ticket=; logcat does not. Strip it before any log call.
+        val safeUrl = wsUrl.replace(Regex("[?&]ticket=[^&\\s]*"), "ticket=***")
+        DebugLog.log("WS", "Connection", "opening → $safeUrl")
+        Log.d("Hermex", "WsConnectionManager: opening $safeUrl")
 
         val request = Request.Builder().url(wsUrl).build()
 
@@ -223,6 +242,10 @@ class WsConnectionManager(
         // duplicate-notification storm: they stay open, keep receiving every server
         // event, and their onClosed starts additional reconnect loops.
         val myGen = generation.incrementAndGet()
+        // Phase 0 trace: which generation opened, and why. Without this the log cannot
+        // tell a connect() socket from a forceConnect() socket from a reconnect-attempt
+        // socket, which is exactly what the drop trials need to distinguish.
+        DebugLog.log("TRACE", "gen_open", "gen=$myGen reason=$reason")
         val stale = webSocket
         webSocket = null
         if (stale != null) {
@@ -238,15 +261,25 @@ class WsConnectionManager(
              *  spawn extra reconnect loops. */
             private fun isCurrent(): Boolean = generation.get() == myGen
 
+            /** Phase 0 trace: every OkHttp callback, stamped with the generation that
+             *  fired it and whether that generation is still live. The "superseded,
+             *  ignored" branch is the exact path the frozen-card hypothesis blames, so
+             *  it has to be visible in the trace, not inferred from absence. */
+            private fun ws_cb(name: String, code: Int, current: Boolean) {
+                DebugLog.log("TRACE", "ws_cb", "gen=$myGen $name code=$code isCurrent=$current")
+            }
+
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                ws_cb("onOpen", 0, isCurrent())
                 if (!isCurrent()) {
+                    suppressState(myGen, "onOpen on superseded socket")
                     DebugLog.log("WS", "Connection", "onOpen on superseded socket (gen $myGen) — ignored")
                     Log.w("Hermex", "WsConnectionManager: onOpen on superseded socket gen=$myGen — ignored")
                     return
                 }
                 Log.d("Hermex", "WsConnectionManager: onOpen")
                 DebugLog.log("WS", "Connection", "onOpen — connected")
-                _state.value = State.Connected
+                emitState(myGen, State.Connected, "onOpen")
                 // v0.1.170: advertise that this client answers server→client requests
                 // (approval, clarify, sudo, …). Without it the gateway treats us as an
                 // old build and fails every approval/clarify immediately with "the
@@ -257,18 +290,24 @@ class WsConnectionManager(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (!isCurrent()) return
+                if (!isCurrent()) {
+                    DebugLog.log("TRACE", "ws_cb", "gen=$myGen onMessage isCurrent=false — frame dropped")
+                    return
+                }
                 messageChannel.trySend(text)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                ws_cb("onClosing", code, isCurrent())
                 Log.d("Hermex", "WsConnectionManager: onClosing code=$code reason=$reason")
                 DebugLog.log("WS", "Connection", "onClosing code=$code reason=$reason")
                 webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                ws_cb("onClosed", code, isCurrent())
                 if (!isCurrent()) {
+                    suppressState(myGen, "onClosed on superseded socket")
                     DebugLog.log("WS", "Connection", "onClosed on superseded socket (gen $myGen) — ignored")
                     Log.w("Hermex", "WsConnectionManager: onClosed on superseded socket gen=$myGen — ignored")
                     return
@@ -282,7 +321,9 @@ class WsConnectionManager(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                ws_cb("onFailure", response?.code ?: -1, isCurrent())
                 if (!isCurrent()) {
+                    suppressState(myGen, "onFailure on superseded socket")
                     DebugLog.log("WS", "Connection", "onFailure on superseded socket (gen $myGen) — ignored")
                     Log.w("Hermex", "WsConnectionManager: onFailure on superseded socket gen=$myGen — ignored")
                     return
@@ -309,7 +350,7 @@ class WsConnectionManager(
         if (reconnectJob?.isActive == true) return
         if (isUserDisconnect) return
 
-        _state.value = State.Reconnecting
+        emitState(generation.get(), State.Reconnecting, "reconnect loop start")
         DebugLog.log("WS", "Reconnect", "starting reconnect loop")
 
         reconnectJob = scope.launch {
@@ -331,7 +372,7 @@ class WsConnectionManager(
                 when (ticketResult) {
                     is NetworkResult.Success -> {
                         DebugLog.log("WS", "Reconnect", "attempt $attempt — ticket ok, opening WS")
-                        openWebSocket(ticketResult.data.ticket)
+                        openWebSocket(ticketResult.data.ticket, "reconnect attempt $attempt")
                         // Wait for connection to stabilize before deciding
                         delay(2000)
                         if (_state.value == State.Connected) {

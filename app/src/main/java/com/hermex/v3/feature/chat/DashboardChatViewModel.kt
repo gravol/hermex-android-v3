@@ -71,7 +71,18 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     // IMMEDIATELY instead of waiting for the stale-stream watchdog, so a
     // dropped/late/out-of-order completion signal can no longer strand a
     // spinner on a short "status check" turn forever.
-    private var turnDoneSeen = false
+    // Phase 0 trace: every write to this flag, with the transition. Claude's plan flags
+    // that `if (!turnDoneSeen) turnDoneSeen = false` may be a bug rather than a no-op —
+    // the write log is what settles it, so the flag has to report its own changes.
+    private var _turnDoneSeen = false
+    private var turnDoneSeen: Boolean
+        get() = _turnDoneSeen
+        set(value) {
+            if (_turnDoneSeen != value) {
+                DebugLog.log("TRACE", "turnDoneSeen", "${_turnDoneSeen}→$value (sessionId=$sessionId)")
+            }
+            _turnDoneSeen = value
+        }
     // v0.1.140: suppress duplicate turn-finished notifications for a single
     // completed turn. The reconnect reconciliation and the live RunCompleted
     // path can both fire for the same completion when the WS drops during a
@@ -217,6 +228,9 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     // way to learn the turn finished. Remember that we attached while running, and
     // reload when the poll sees it stop.
     private var serverTurnWasRunning = false
+
+    /** Phase 0 trace: counts poll loops so the log can show how many are alive. */
+    private val pollLoopCounter = java.util.concurrent.atomic.AtomicInteger(0)
 
     // v0.1.886 — persisted in-flight marker. Android kills backgrounded app
     // processes, and the chat ViewModel dies with them, so no reconcile code can
@@ -1240,6 +1254,14 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 var previousWsState: Any? = null
                 launch {
                     wsConnection.state.collect { wsState ->
+                        // Phase 0 trace: the edge the reconnect handler keys on, made
+                        // explicit — current state, previous state, and whether this is
+                        // a CONNECTED edge. If the handler never fires, this line shows
+                        // whether the edge ever existed.
+                        val isEdge = wsState.toString().uppercase() == "CONNECTED" &&
+                            previousWsState?.toString()?.uppercase() != "CONNECTED"
+                        DebugLog.log("TRACE", "vm_state_rx",
+                            "state=$wsState prev=$previousWsState edge=$isEdge (sessionId=$sessionId liveSid=$liveSid)")
                         DebugLog.log("WS", "ChatVM",
                             "state=$wsState (sessionId=$sessionId liveSid=$liveSid)")
                         // Detect reconnect: state changed TO Connected
@@ -1297,6 +1319,14 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                     // turnDoneSeen set. A full history reload is safe and idempotent.
                                     val reconcile = localThinksStreaming &&
                                         (turnDoneServerSide || turnDoneSeen || !streamingContentSeen)
+                                    // Phase 0 trace: every gate input and the decision.
+                                    // The claim under test is "the gate never fires on a
+                                    // real mid-turn drop" — this line is the evidence, and
+                                    // its absence is the counter-evidence.
+                                    DebugLog.log("TRACE", "gate",
+                                        "resume#${resumeCount} running=${result.running} " +
+                                        "localInFlight=$localThinksStreaming turnDoneSeen=$turnDoneSeen " +
+                                        "streamingContentSeen=$streamingContentSeen reconcile=$reconcile")
                                     if (reconcile) {
                                         DebugLog.log("STATE", "SessionID",
                                             "reconnect: turn finished while disconnected (server running=false, " +
@@ -2163,6 +2193,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     private var screenVisible = true
 
     override fun setScreenVisible(visible: Boolean) {
+        DebugLog.log("TRACE", "screenVisible", "${screenVisible}→$visible (sessionId=$sessionId)")
         screenVisible = visible
         // v0.1.874: publish the watched session so notification paths can skip
         // "turn finished" pings for the very chat the user is looking at.
@@ -2188,6 +2219,11 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         if (visible && sessionId.isNotEmpty()) {
             viewModelScope.launch {
                 var attempts = 0
+                // Phase 0 trace: every poll loop gets an id. The claim under test is that
+                // one loop is spawned per visible/hidden cycle and never dies — the ids
+                // make that countable in the log.
+                val loopId = pollLoopCounter.incrementAndGet()
+                DebugLog.log("TRACE", "poll_loop", "id=$loopId start sessionId=$sessionId")
                 // v0.1.87: poll CONTINUOUSLY while the chat is open — burst
                 // (2s) until first data, then every 30s to keep the gauge live.
                 // session.info events aren't guaranteed to reach this client
@@ -2197,8 +2233,13 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 // trivial while the screen is open.
                 while (screenVisible) {
                     attempts++
+                    DebugLog.log("TRACE", "poll_tick", "id=$loopId attempt=$attempts screenVisible=$screenVisible")
                     try {
                         val result = rpcClient.sessionResume(sessionId, omitMessages = true)
+                        DebugLog.log("TRACE", "poll_resume",
+                            "id=$loopId ok running=${result.running} count=${result.message_count} " +
+                            "local=${uiState.messages.size} serverTurnWasRunning=$serverTurnWasRunning " +
+                            "localInFlight=${localInFlight()}")
                         // v0.1.886 — foreground reconcile. The gateway routes each
                         // session's event frames to the ONE transport stored on the
                         // session; when the phone's socket drops mid-turn the server
@@ -2219,8 +2260,13 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                             DebugLog.log("STATE", "SessionID",
                                 "foreground poll: server running=true — watching for completion")
                         }
-                        if (Reconcile.needsReload(uiState.messages, result.running,
-                                result.message_count, serverTurnWasRunning)) {
+                        val needsReload = Reconcile.needsReload(uiState.messages, result.running,
+                            result.message_count, serverTurnWasRunning)
+                        DebugLog.log("TRACE", "gate_poll",
+                            "id=$loopId needsReload=$needsReload running=${result.running} " +
+                            "count=${result.message_count} local=${uiState.messages.size} " +
+                            "serverTurnWasRunning=$serverTurnWasRunning localInFlight=${localInFlight()}")
+                        if (needsReload) {
                             serverTurnWasRunning = false
                             DebugLog.log("STATE", "SessionID",
                                 "foreground poll: reconcile — server running=${result.running} " +
@@ -2247,8 +2293,11 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                     ?: uiState.currentReasoning,
                             )
                         }
-                    } catch (_: Exception) {
-                        // Best-effort — loop back and try again.
+                    } catch (e: Exception) {
+                        // Phase 0: this silent catch swallowed every failed resume on the
+                        // recovery path of the headline bug. Log it; behaviour unchanged.
+                        DebugLog.log("TRACE", "poll_resume",
+                            "id=$loopId FAILED ${e.javaClass.simpleName}: ${e.message}")
                     }
                     delay(if (attempts <= 3) 2_000 else 30_000)
                 }

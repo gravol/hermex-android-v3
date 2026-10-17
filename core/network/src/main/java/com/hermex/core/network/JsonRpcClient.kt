@@ -92,6 +92,9 @@ class JsonRpcClient(
     private val serverRequestChannel = Channel<ServerRequest>(UNLIMITED)
     val serverRequests: Flow<ServerRequest> = serverRequestChannel.receiveAsFlow()
 
+    /** Phase 0 trace: running count of each event name that has no parser arm. */
+    private val unknownCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     private var consumerJob: Job? = null
 
     // ── Lifecycle ──
@@ -232,6 +235,16 @@ class JsonRpcClient(
             val result = frame["result"]
             val error = frame["error"]
             val params = frame["params"]?.jsonObject
+
+            // Phase 0 trace (log-only): one line per inbound frame, ids/method/session
+            // prefix only, never payloads. The frozen-card hypothesis needs to see which
+            // frames arrive, in what order relative to the socket generation, and which
+            // get dropped as unrecognized.
+            val sessHash = params?.let { p ->
+                val sid = p["session_id"]?.jsonPrimitive?.content
+                if (sid != null) "sid=${sid.take(8)}" else "sid=-"
+            } ?: "sid=-"
+            DebugLog.log("TRACE", "frame", "method=$method id=${rawId?.take(8)} $sessHash")
 
             when {
                 // Response to one of our requests
@@ -466,11 +479,18 @@ class JsonRpcClient(
                 sessionId = sessionId,
             )
 
-            else -> RpcNotification.Unknown(
-                eventType = eventType,
-                rawParams = params,
-                sessionId = sessionId,
-            )
+            else -> {
+                // Phase 0 trace: count each dropped event name. A dropped tool.started
+                // or run.failed is a competing hypothesis for the frozen tool card, so
+                // the audit needs the name and the running count, not a silent Unknown.
+                val n = unknownCounts.merge(eventType, 1) { a, b -> a + b }
+                DebugLog.log("TRACE", "unknown_event", "name=$eventType count=$n sid=${sessionId?.take(8)}")
+                RpcNotification.Unknown(
+                    eventType = eventType,
+                    rawParams = params,
+                    sessionId = sessionId,
+                )
+            }
         }
 
         // ClarifyRequest: pass through to ViewModel for user response

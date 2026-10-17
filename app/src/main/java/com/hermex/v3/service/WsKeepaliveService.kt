@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.hermex.core.network.DebugLog
 import com.hermex.v3.MainActivity
 import com.hermex.v3.R
 
@@ -51,6 +52,44 @@ class WsKeepaliveService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
+        // Phase 0 trace: network availability and Doze, logged alongside the socket
+        // generation lines. There is no ConnectivityManager usage anywhere in the app
+        // today, so a Wi-Fi→LTE handover or a Doze entry is invisible in the log — and
+        // those are two of the five drop scenarios the trials need.
+        registerNetworkWatch()
+    }
+
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    private fun isDeviceIdle(): Boolean =
+        (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).isDeviceIdleMode
+
+    private fun registerNetworkWatch() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(n: android.net.Network) {
+                // `Network.getCapabilities()` and `NetworkCapabilities.getTransport()` are both
+                // non-public SDK. The public path is ConnectivityManager
+                // .getNetworkCapabilities(Network) + hasTransport(int).
+                val caps = cm.getNetworkCapabilities(n)
+                DebugLog.log("TRACE", "net", "net_available wifi=${caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)} " +
+                    "cell=${caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)} " +
+                    "vpn=${caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)} idle=${isDeviceIdle()}")
+            }
+            override fun onLost(n: android.net.Network) {
+                val caps = cm.getNetworkCapabilities(n)
+                DebugLog.log("TRACE", "net", "net_lost wifi=${caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)} " +
+                    "cell=${caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)} " +
+                    "vpn=${caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)} idle=${isDeviceIdle()}")
+            }
+        }
+        netCallback = cb
+        try {
+            cm.registerNetworkCallback(android.net.NetworkRequest.Builder().build(), cb)
+            DebugLog.log("TRACE", "net", "callback registered idle=${isDeviceIdle()}")
+        } catch (e: Exception) {
+            DebugLog.log("TRACE", "net", "register failed ${e.javaClass.simpleName}: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -61,6 +100,15 @@ class WsKeepaliveService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        val cb = netCallback
+        if (cb != null) {
+            try {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager)
+                    .unregisterNetworkCallback(cb)
+            } catch (_: Exception) {}
+            netCallback = null
+            DebugLog.log("TRACE", "net", "callback unregistered")
+        }
         super.onDestroy()
     }
 

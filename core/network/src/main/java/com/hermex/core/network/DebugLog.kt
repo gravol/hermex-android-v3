@@ -268,7 +268,12 @@ object DebugLog {
             buffer.addLast(entry)
         }
         lastTs = entry.timestamp
-        val line = "${entry.timestamp}|${entry.level}|$tag|${message.replace('\n', '\u0001')}\n"
+        // v0.1.889 (Phase 0): the disk journal must carry the REDACTED entry, not the raw
+        // message. The old line interpolated the raw $message, so passwords, cookies and
+        // ws-tickets landed in filesDir/debuglog/hermex.log — a file exposed through
+        // file_paths.xml <files-path name="debug_journal" path="debuglog/"/>. The redaction
+        // choke point at entry time was defeated by the disk write.
+        val line = "${entry.timestamp}|${entry.level}|${entry.tag}|${entry.message.replace('\n', '\u0001')}\n"
         synchronized(pending) {
             // Bound the unflushed tail (writer stalled / app killed fast).
             if (pendingLen.get() < 4L * MAX_FILE_BYTES) {
@@ -309,6 +314,12 @@ object DebugLog {
         Regex("(?i)^set-cookie:.*$", RegexOption.MULTILINE),
         Regex("(?i)^authorization:.*$", RegexOption.MULTILINE),
         Regex("[?&]ticket=[^&\\s]*"),
+        // v0.1.889 Phase 0: the JSON patterns above require a quoted key. `/api/config/raw`
+        // returns the config as YAML *inside a JSON string*, so `api_key: sk-...` appears
+        // unquoted and reached the journal in cleartext. Cover the YAML form and the
+        // `sk-` key shape directly.
+        Regex("(?i)(api_key|apikey|access_token|token|secret|password)([\"'])?\\s*:\\s*[^\\s,}\\\"']+"),
+        Regex("sk-[A-Za-z0-9._-]{6,}"),
     )
 
     private fun redactSecrets(s: String): String {
@@ -319,6 +330,8 @@ object DebugLog {
         out = secretPatterns[3].replace(out, "Set-Cookie: ***")
         out = secretPatterns[4].replace(out, "Authorization: ***")
         out = secretPatterns[5].replace(out, "&ticket=***")
+        out = secretPatterns[6].replace(out) { m -> "${m.groupValues[1]}: ***" }
+        out = secretPatterns[7].replace(out, "sk-***")
         return out
     }
 
