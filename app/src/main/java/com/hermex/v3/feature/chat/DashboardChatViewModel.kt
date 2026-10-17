@@ -1213,6 +1213,25 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             val stillStreaming = uiState.messages.any {
                 it.role == "assistant" && it.isStreaming
             }
+            // v0.1.889: the tool-card gap. `UiToolCall.completed` drives the card's
+            // spinner glyph (`◌` vs `✓`) and the ticking elapsed timer, and ONLY
+            // `tool.complete` flips it. The original watchdog covered assistant
+            // `isStreaming` and never touched tool cards, so a card whose
+            // `tool.complete` is lost — ring truncated, frame never in the ring,
+            // replay unavailable — spins forever. Authority is the server's turn
+            // state: if the turn is not running, no `tool.complete` is coming, so
+            // every open card is stale by definition. A genuinely long-running tool
+            // keeps `serverTurnWasRunning=true` and is left alone.
+            val cardFix = Reconcile.closeStaleCards(uiState.messages, serverTurnWasRunning, turnDoneSeen)
+            if (cardFix != null) {
+                val (msgs, open) = cardFix
+                DebugLog.log("RPC", "DashboardChat",
+                    "v0.1.889: tool-card watchdog fired after ${STALE_STREAM_GRACE_MS}ms — " +
+                    "$open card(s) still completed=false; turnDoneSeen=$turnDoneSeen " +
+                    "serverTurnWasRunning=$serverTurnWasRunning, closing")
+                uiState = uiState.copy(messages = msgs, scrollGeneration = uiState.scrollGeneration + 1)
+                DebugLog.log("RPC", "DashboardChat", "v0.1.889: closed $open tool card(s)")
+            }
             if (stillStreaming && !streamingContentSeen && !turnDoneSeen) {
                 DebugLog.log("RPC", "DashboardChat",
                     "v0.1.137: stale-stream watchdog fired after ${STALE_STREAM_GRACE_MS}ms — " +

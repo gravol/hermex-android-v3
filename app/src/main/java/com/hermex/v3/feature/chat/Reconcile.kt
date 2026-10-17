@@ -50,4 +50,38 @@ object Reconcile {
         if (serverMessageCount != null && serverMessageCount > messages.size) return true
         return false
     }
+
+    /**
+     * Close tool cards that can never receive their completion event.
+     *
+     * `UiToolCall.completed` drives the card's spinner glyph (`◌` vs `✓`) and the
+     * ticking elapsed timer, and ONLY `tool.complete` flips it. The stale-stream
+     * watchdog cleared assistant `isStreaming` and never touched tool cards, so a
+     * card whose `tool.complete` is lost — ring truncated, frame never in the ring,
+     * replay unavailable — spins forever.
+     *
+     * Authority is the server's turn state: if the turn is not running, no
+     * `tool.complete` is coming, so every open card is stale by definition. A
+     * genuinely long-running tool keeps `serverRunning=true` and is left alone —
+     * that is the false-positive guard.
+     *
+     * @return the closed messages plus the number of cards closed, or null when
+     *   nothing should change.
+     */
+    fun closeStaleCards(
+        messages: List<UiMessage>,
+        serverRunning: Boolean?,
+        turnDoneSeen: Boolean,
+    ): Pair<List<UiMessage>, Int>? {
+        val turnNotRunning = turnDoneSeen || serverRunning == false
+        if (!turnNotRunning) return null
+        val open = messages.sumOf { it.toolCalls.count { c -> !c.completed } }
+        if (open == 0) return null
+        val closed = messages.map { m ->
+            if (m.toolCalls.any { !it.completed })
+                m.copy(toolCalls = m.toolCalls.map { if (it.completed) it else it.copy(completed = true) })
+            else m
+        }
+        return closed to open
+    }
 }

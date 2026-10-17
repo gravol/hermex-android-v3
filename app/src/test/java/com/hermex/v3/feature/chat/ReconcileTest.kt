@@ -1,5 +1,6 @@
 package com.hermex.v3.feature.chat
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -85,5 +86,38 @@ class ReconcileTest {
         val msgs = listOf(UiMessage(id = "u1", role = "user", content = "x",
             isStreaming = true))
         assertFalse(Reconcile.localInFlight(msgs))
+    }
+
+    // ── v0.1.889 tool-card watchdog ──
+
+    @Test fun openCardClosesWhenServerTurnNotRunning() {
+        val msgs = listOf(assistant(streaming = false, toolCompleted = false))
+        val r = Reconcile.closeStaleCards(msgs, serverRunning = false, turnDoneSeen = false)
+        assertTrue(r != null)
+        assertEquals(1, r!!.second)
+        assertTrue(r.first[0].toolCalls[0].completed)
+    }
+
+    @Test fun openCardClosesWhenTurnDoneSeen() {
+        val msgs = listOf(assistant(streaming = false, toolCompleted = false))
+        val r = Reconcile.closeStaleCards(msgs, serverRunning = true, turnDoneSeen = true)
+        assertTrue(r != null && r.first[0].toolCalls[0].completed)
+    }
+
+    @Test fun longRunningToolIsNotClosed() {
+        // False-positive guard: the turn IS running, so a `tool.complete` is still
+        // coming. A genuinely long-running tool must keep spinning.
+        val msgs = listOf(assistant(streaming = false, toolCompleted = false))
+        assertTrue(Reconcile.closeStaleCards(msgs, serverRunning = true, turnDoneSeen = false) == null)
+    }
+
+    @Test fun alreadyCompletedCardsAreUntouched() {
+        val msgs = listOf(assistant(streaming = false, toolCompleted = true))
+        assertTrue(Reconcile.closeStaleCards(msgs, serverRunning = false, turnDoneSeen = false) == null)
+    }
+
+    @Test fun nullRunningWithNoTurnDoneIsSafe() {
+        val msgs = listOf(assistant(streaming = false, toolCompleted = false))
+        assertTrue(Reconcile.closeStaleCards(msgs, serverRunning = null, turnDoneSeen = false) == null)
     }
 }
