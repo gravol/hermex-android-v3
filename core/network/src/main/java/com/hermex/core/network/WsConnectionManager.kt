@@ -50,6 +50,13 @@ class WsConnectionManager(
     private var reconnectJob: Job? = null
     private var isUserDisconnect = false
 
+    /** v0.1.889 liveness watchdog. OkHttp fires onClosed/onFailure only when it learns the
+     *  socket is gone; with `readTimeout(0)` and a 300 s ping, a black-holed route (a
+     *  Tailscale path change, a phone that switches networks) can leave the reader blocked
+     *  for minutes with state still Connected. The watchdog is the app-level backstop:
+     *  state says Connected, there is no socket — reconnect. */
+    private var watchdogJob: Job? = null
+
     /** v0.1.884: serializes connect()/forceConnect() so exactly one socket is
      *  in flight. Every screen calls connect() on entry; the state check alone
      *  is check-then-act and lets all of them through. */
@@ -124,6 +131,7 @@ class WsConnectionManager(
                 return
             }
             emitState(generation.get(), State.Connecting, "connect()")
+            startLivenessWatchdog()
             DebugLog.log("WS", "Connection", "connect() — fetching ticket")
             Log.d("Hermex", "WsConnectionManager.connect()")
 
@@ -224,7 +232,7 @@ class WsConnectionManager(
     }
     // ── Internal ──
 
-    private fun openWebSocket(ticket: String, reason: String = "connect") {
+    private fun openWebSocket(ticket: String, reason: String = "connect"): Int {
         val wsUrl = DashboardApiClient.wsBaseUrl()
             .trimEnd('/') + "/api/ws?ticket=$ticket"
 
@@ -316,6 +324,10 @@ class WsConnectionManager(
                 DebugLog.log("WS", "Connection", "onClosed code=$code")
                 this@WsConnectionManager.webSocket = null
                 if (!isUserDisconnect) {
+                    // v0.1.889: same race as onFailure — a reconnect loop in flight is
+                    // driving this socket, and its success check reads the shared state.
+                    reconnectJob?.cancel()
+                    reconnectJob = null
                     startReconnectLoop()
                 }
             }
@@ -332,10 +344,17 @@ class WsConnectionManager(
                 DebugLog.log("WS", "Connection", "onFailure: ${t.message} (http=${response?.code})")
                 this@WsConnectionManager.webSocket = null
                 if (!isUserDisconnect) {
+                    // v0.1.889: an in-flight reconnect loop is driving the socket that just
+                    // died, and its success check reads the shared state — so it reports
+                    // "connected!" on this dead generation. Drop the loop so the next
+                    // attempt opens a real socket.
+                    reconnectJob?.cancel()
+                    reconnectJob = null
                     startReconnectLoop()
                 }
             }
         })
+        return myGen
     }
 
     // v0.1.884: @Synchronized. The old guard was check-then-act across OkHttp's callback
@@ -345,11 +364,28 @@ class WsConnectionManager(
     // fetched, and N sockets came up — each replaying session.resume and each
     // delivering the turn-end notification. Debug log 2026-10-15 16:46:53: 5 loops
     // started within 2ms, 5 "attempt 1 — connected!" at 16:46:57.
+    /** Watch the state/socket pair every 15 s. If the UI believes it is Connected with no
+     *  socket under it, the connection is a lie — start a reconnect. */
+    private fun startLivenessWatchdog() {
+        if (watchdogJob?.isActive == true) return
+        watchdogJob = scope.launch {
+            while (!isUserDisconnect) {
+                delay(15_000)
+                if (_state.value == State.Connected && webSocket == null) {
+                    DebugLog.log("WS", "Watchdog", "state=Connected with webSocket=null — forcing reconnect")
+                    Log.w("Hermex", "WsConnectionManager: watchdog — Connected state with no socket, reconnecting")
+                    startReconnectLoop()
+                }
+            }
+        }
+    }
+
     @Synchronized
     private fun startReconnectLoop() {
         if (reconnectJob?.isActive == true) return
         if (isUserDisconnect) return
 
+        startLivenessWatchdog()
         emitState(generation.get(), State.Reconnecting, "reconnect loop start")
         DebugLog.log("WS", "Reconnect", "starting reconnect loop")
 
@@ -375,10 +411,18 @@ class WsConnectionManager(
                 when (ticketResult) {
                     is NetworkResult.Success -> {
                         DebugLog.log("WS", "Reconnect", "attempt $attempt — ticket ok, opening WS")
-                        openWebSocket(ticketResult.data.ticket, "reconnect attempt $attempt")
-                        // Wait for connection to stabilize before deciding
+                        val myGen = openWebSocket(ticketResult.data.ticket, "reconnect attempt $attempt")
+                        // Wait for the connection to stabilize before deciding
                         delay(2000)
-                        if (_state.value == State.Connected) {
+                        // v0.1.889: the success test has to be about the socket THIS attempt
+                        // opened, not the shared state. Debug log 2026-10-17 11:10:25: the
+                        // loop opened gen=4, its onOpen set state=Connected, the server
+                        // closed gen=4 800 ms later (code 1012, dashboard restart), and the
+                        // check read that stale edge — it logged "connected!" with
+                        // webSocket == null and no loop running. The app sat "Connected" on
+                        // a dead socket for 18 minutes while the gateway was healthy.
+                        if (_state.value == State.Connected &&
+                            generation.get() == myGen && webSocket != null) {
                             DebugLog.log("WS", "Reconnect", "attempt $attempt — connected!")
                             Log.d("Hermex", "WsConnectionManager: reconnected (attempt $attempt)")
                             return@launch
