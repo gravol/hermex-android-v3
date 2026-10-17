@@ -61,10 +61,20 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             } catch (e: Exception) {
                 DebugLog.log("ERROR", "SessionsVM", "shared connect failed: ${e.message}")
             }
+            var lastReloadAt = 0L
             sharedRpc.notifications.collect { n ->
                 if (n is RpcNotification.SessionChanged) {
-                    DebugLog.log("INFO", "SessionsVM", "sessions.changed → reload")
-                    loadDashboardSessions()
+                    // v0.1.886 — debounce. `sessions.changed` fires constantly
+                    // (cron runs, other clients, turn completion); field logs show
+                    // session.list in identical pairs every 2-10s. Collapse bursts.
+                    val now = System.currentTimeMillis()
+                    if (now - lastReloadAt < 1500) {
+                        DebugLog.log("INFO", "SessionsVM", "sessions.changed → debounced")
+                    } else {
+                        lastReloadAt = now
+                        DebugLog.log("INFO", "SessionsVM", "sessions.changed → reload")
+                        loadDashboardSessions()
+                    }
                 }
             }
         }
@@ -179,6 +189,25 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
      * ticket fetch.
      */
     private suspend fun loadDashboardSessions() {
+        // v0.1.886 — kill the duplicate-request storm. `sessions.changed` fires
+        // constantly (cron runs, other clients, turn completion) and the screen
+        // also calls loadSessions() on entry; field logs show session.list
+        // arriving in IDENTICAL PAIRS every 2-10s. One reload at a time.
+        if (reloadInFlight) {
+            DebugLog.log("INFO", "SessionsVM", "session.list deferred — reload in flight")
+            return
+        }
+        reloadInFlight = true
+        try {
+            loadDashboardSessionsInner()
+        } finally {
+            reloadInFlight = false
+        }
+    }
+
+    private var reloadInFlight = false
+
+    private suspend fun loadDashboardSessionsInner() {
         DebugLog.log("INFO", "SessionsVM", "loadSessions via DASHBOARD JsonRpcClient.sessionList()")
         Log.d("Hermex", "SessionsViewModel: loading dashboard sessions")
 

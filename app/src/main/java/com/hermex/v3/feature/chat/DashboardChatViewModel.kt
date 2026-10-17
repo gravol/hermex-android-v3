@@ -177,11 +177,58 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         if (screenVisible) {
             com.hermex.v3.AppState.visibleSessionId = sessionId
         }
+        // v0.1.886 — a turn that was in flight when the process died: reconcile on
+        // open. loadMessages() does the full reload; clearing turnNotifPosted lets
+        // the completion ping fire for the turn the user never saw.
+        viewModelScope.launch {
+            val mark = inflightStore.getString("inflight_$sessionId").first()
+            if (mark == "1") {
+                turnNotifPosted = false
+                DebugLog.log("STATE", "SessionID",
+                    "in-flight marker for $sessionId — reconciling after process death")
+            }
+        }
         DebugLog.log("STATE", "SessionID",
             "init() — sessionId ASSIGNED: old=$oldSid new=$sessionId (DB key) title=$sessionTitle")
         connectWsAndStart()
         loadReasoningFromConfig()
         loadYoloStatus(false)
+    }
+
+    /**
+     * v0.1.886 — the frozen-spinner gate, widened.
+     *
+     * The old reconcile test looked only at `isStreaming` on an assistant message.
+     * The stale-stream watchdog (v0.1.123) clears that flag after a grace period,
+     * so when it fires first the gate goes false and the full-history reload never
+     * runs — the tool card keeps its live elapsed-timer rendering forever and the
+     * finished answer never surfaces. A tool call that never received its
+     * completion event (`completed == false`) is the same stuck state, so it counts
+     * here too.
+     */
+    private fun localInFlight(): Boolean = uiState.messages.any {
+        it.role == "assistant" && (it.isStreaming || it.toolCalls.any { t -> !t.completed })
+    }
+
+    // v0.1.886 — persisted in-flight marker. Android kills backgrounded app
+    // processes, and the chat ViewModel dies with them, so no reconcile code can
+    // run after a process death: the user's only recovery is close + reopen. The
+    // marker records "a turn was running for this session" across process death,
+    // so the next chat open reconciles (full reload) and the turn-finished ping
+    // fires. Cleared when the server reports the turn is not running, and on every
+    // completion signal.
+    private val inflightStore by lazy {
+        com.hermex.v3.di.AppModule.provideDataStoreManager(getApplication())
+    }
+
+    private fun markInFlight(sid: String) {
+        if (sid.isEmpty()) return
+        viewModelScope.launch { runCatching { inflightStore.setString("inflight_$sid", "1") } }
+    }
+
+    private fun clearInFlight(sid: String) {
+        if (sid.isEmpty()) return
+        viewModelScope.launch { runCatching { inflightStore.setString("inflight_$sid", "") } }
     }
 
     override fun loadMessages() {
@@ -194,6 +241,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             try {
                 val result = rpcClient.sessionResume(sessionId)
                 resumeCount++
+                if (result.running == false) clearInFlight(sessionId)
                 // liveSid is DEBUG ONLY — never write into sessionId
                 val newLiveSid = result.session_id
                 val newResumed = result.resumed ?: sessionId
@@ -549,6 +597,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     override fun sendMessage(text: String) {
         if (text.isBlank() || sessionId.isEmpty()) return
         val trimmed = text.trim()
+        markInFlight(sessionId)
 
         // /stop / /interrupt / /halt: end the turn via session.interrupt — NOT
         // slash.exec (the server's /stop kills background processes, it does not
@@ -1227,9 +1276,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                     // reload so the final answer appears without a hard
                                     // close + reopen.
                                     val turnDoneServerSide = result.running == false
-                                    val localThinksStreaming = uiState.messages.any {
-                                        it.role == "assistant" && it.isStreaming
-                                    }
+                                    val localThinksStreaming = localInFlight()
                                     // v0.1.137 — also reconcile when the server's `running`
                                     // is ambiguous (null) but we've already seen a turn-completion
                                     // signal locally and are still stuck streaming: a full history
@@ -1639,6 +1686,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 // immediately (no 45s watchdog wait) and a later stray delta can
                 // land on a fresh placeholder instead of stranding the UI.
                 this.turnDoneSeen = true
+                clearInFlight(sessionId)
                 val idx = msgs.indexOfLast { it.role == "assistant" }
                 if (idx >= 0) {
                     val cur = msgs[idx]
@@ -1701,6 +1749,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 // still know the turn is done — record it so a later stray delta
                 // re-establishes a placeholder rather than stranding this spinner.
                 this.turnDoneSeen = true
+                clearInFlight(sessionId)
                 // v0.1.140: run.completed is the primary "turn done" signal but
                 // the block above never posted a turn-finished notification when
                 // away. Mirror the MessageCompleted path so completed-while-away
@@ -2142,6 +2191,25 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     attempts++
                     try {
                         val result = rpcClient.sessionResume(sessionId, omitMessages = true)
+                        // v0.1.886 — foreground reconcile. The gateway routes each
+                        // session's event frames to the ONE transport stored on the
+                        // session; when the phone's socket drops mid-turn the server
+                        // sets a detached sentinel and every remaining frame is
+                        // DROPPED, not queued. The turn is still persisted, so the
+                        // client is left with a streaming message and/or an
+                        // unfinished tool card and no way to learn the turn ended.
+                        // This poll already carries `running` — if the server says
+                        // the turn is over and the local UI still thinks something
+                        // is in flight, do the full history reload. That is the
+                        // "close the app and reopen" path, now taken automatically
+                        // while the chat is open.
+                        if (result.running == false && localInFlight()) {
+                            DebugLog.log("STATE", "SessionID",
+                                "foreground poll: server running=false, local in-flight " +
+                                "— full reload to reconcile")
+                            loadMessages()
+                            break
+                        }
                         val ctx = parseContextUsage(result.info)
                         if (ctx.first != null || ctx.second != null) {
                             uiState = uiState.copy(
