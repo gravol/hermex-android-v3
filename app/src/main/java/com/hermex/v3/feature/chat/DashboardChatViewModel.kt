@@ -210,6 +210,14 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         it.role == "assistant" && (it.isStreaming || it.toolCalls.any { t -> !t.completed })
     }
 
+    // v0.1.886 — the app can open a chat MID-TURN. A full `session.resume` returns
+    // the messages the server has persisted so far, and none of them are marked
+    // streaming (server rows are complete), so `localInFlight()` is false and the
+    // reconcile gate never fires: the chat stops mid-answer with no spinner and no
+    // way to learn the turn finished. Remember that we attached while running, and
+    // reload when the poll sees it stop.
+    private var serverTurnWasRunning = false
+
     // v0.1.886 — persisted in-flight marker. Android kills backgrounded app
     // processes, and the chat ViewModel dies with them, so no reconcile code can
     // run after a process death: the user's only recovery is close + reopen. The
@@ -2207,6 +2215,35 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                             DebugLog.log("STATE", "SessionID",
                                 "foreground poll: server running=false, local in-flight " +
                                 "— full reload to reconcile")
+                            loadMessages()
+                            break
+                        }
+                        // v0.1.886 — attached mid-turn: the resume rows are complete,
+                        // so nothing looks in-flight locally. Track the server's
+                        // running flag and reload the moment it flips to false, so the
+                        // tail of the turn lands instead of a chat that stops mid-answer.
+                        if (result.running == true) {
+                            if (!serverTurnWasRunning) {
+                                serverTurnWasRunning = true
+                                DebugLog.log("STATE", "SessionID",
+                                    "foreground poll: server running=true — watching for completion")
+                            }
+                        } else if (serverTurnWasRunning) {
+                            serverTurnWasRunning = false
+                            DebugLog.log("STATE", "SessionID",
+                                "foreground poll: turn ended while attached — full reload")
+                            loadMessages()
+                            break
+                        }
+                        // v0.1.886 — message-count reconcile. The count is the robust
+                        // signal: it does not depend on catching the turn while
+                        // `running` is true. If the server has more rows than the
+                        // local list, the tail of a turn (or a whole turn) is missing.
+                        val serverCount = result.message_count
+                        if (serverCount != null && serverCount > uiState.messages.size) {
+                            DebugLog.log("STATE", "SessionID",
+                                "foreground poll: server has $serverCount rows, local has " +
+                                "${uiState.messages.size} — full reload")
                             loadMessages()
                             break
                         }
