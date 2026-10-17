@@ -1,3 +1,30 @@
+## v0.1.886 (vc32) — 2026-10-17
+- **Frozen tool card, missing final answer (the "close and reopen shows it" bug).** The gateway
+  routes each session's event frames to the **one transport stored on the session**. When the
+  phone's socket drops mid-turn the server sets a detached sentinel and every remaining frame is
+  **dropped, not queued** — the turn is still persisted, so a hard close + reopen (full
+  `loadMessages()`) shows the answer while the live UI sits on a spinning tool card forever.
+  Reproduced on Pixel 8 with a 12-tool-call turn: the server had 26 messages ending `DONE`, the
+  app log showed one `session.resume` and **zero** delta/tool/completion/reconcile lines.
+  Four fixes:
+  - **Widened the reconcile gate** (`localInFlight()`): the old test looked only at
+    `isStreaming` on an assistant message, and the v0.1.123 stale-stream watchdog clears that
+    flag — when it fires first the gate goes false and the full reload never runs. A tool call
+    with `completed == false` is the same stuck state and now counts.
+  - **Foreground reconcile:** the existing 30s `session.resume(omitMessages=true)` gauge poll
+    already carries the server's `running`. If it says the turn is over and the local UI still
+    has a streaming message or an unfinished tool card, do the full history reload — the
+    "close and reopen" path, taken automatically while the chat is open.
+  - **Persisted in-flight marker** (`inflight_<sid>` in DataStore): set on send, cleared on every
+    completion signal and when the server reports `running == false`. Android kills backgrounded
+    processes and the chat ViewModel dies with them, so no reconcile code can run after a process
+    death; the marker survives, and the next chat open reconciles and fires the turn-finished ping.
+  - **Killed the sessions-list reload storm:** field logs show `session.list` in identical pairs
+    every 2-10s (the churn drives reconnects, which is where the transport detaches). One reload
+    in flight at a time, plus a 1.5s debounce on `sessions.changed`.
+- **Parser gaps found in the same log:** `session.usage`, `platforms.changed` and `session.title`
+  arrive as `DashboardChat: unknown event` and are dropped.
+
 ## v0.1.885 (vc31) — 2026-10-16
 - **One WebSocket for the whole app.** `WsConnectionManager` was constructed per screen:
   4 sites in `SessionsViewModel`, one per chat session in `ChatVmsHolder` ("one WS per
