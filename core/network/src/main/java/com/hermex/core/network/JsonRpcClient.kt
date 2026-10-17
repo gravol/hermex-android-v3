@@ -121,6 +121,21 @@ class JsonRpcClient(
         return result
     }
 
+    /**
+     * Phase 1 replay delivery: feed the gateway's replayed event frames back through
+     * the same parser the live socket uses, in order, so the UI renders exactly what
+     * it missed while the socket was down. `handleNotification` is the single parse
+     * path, so replayed frames get the identical arms, session routing and
+     * `seq`-ordered append semantics as live frames.
+     */
+    fun replayEvents(events: List<JsonObject>) {
+        events.forEach { p ->
+            val type = p["type"]?.jsonPrimitive?.content ?: "event"
+            handleNotification("event", p)
+            DebugLog.log("TRACE", "replayed", "type=$type sid=${p["session_id"]?.jsonPrimitive?.content?.take(8)} seq=${p["seq"]?.jsonPrimitive?.content}")
+        }
+    }
+
     private var consumerJob: Job? = null
 
     // ── Lifecycle ──

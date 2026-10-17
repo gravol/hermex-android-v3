@@ -1365,7 +1365,10 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                                     "count=${replay.count} latest=${replay.latest_seq} " +
                                                     "truncated=${replay.truncated} " +
                                                     "open_requests=${replay.open_requests.size} " +
-                                                    "action=${if (replay.truncated) "full_reload" else "replay_available"}")
+                                                    "action=${if (replay.truncated) "full_reload" else "replay_then_reload"}")
+                                                if (!replay.truncated && replay.events.isNotEmpty()) {
+                                                    rpcClient.replayEvents(replay.events)
+                                                }
                                             } catch (e: Exception) {
                                                 DebugLog.log("TRACE", "replay_decision",
                                                     "sid=${liveSid.take(8)} FAILED ${e.javaClass.simpleName}: ${e.message}")
