@@ -1,3 +1,22 @@
+## v0.1.890 (vc36) — 2026-10-17
+- **The app sat "Connected" on a dead socket for 18 minutes while the gateway was healthy.**
+  Testing on 2026-10-17 11:10 (a `ss -K "sport = :9119"` socket kill plus a dashboard restart)
+  severed every client socket. The debug log shows the reconnect loop opening gen=4, its
+  `onOpen` setting state=Connected, the server closing gen=4 800 ms later (code 1012), and the
+  loop's success check reading that stale edge: it logged "reconnected (attempt 1)" with
+  `webSocket == null` and no loop running. Nothing after that reconnected — the UI believed it
+  was connected, every send was dropped, and the gateway was fine the whole time.
+  Three fixes in `WsConnectionManager`:
+  - **The success test is about the socket this attempt opened.** `openWebSocket` returns its
+    generation; the loop now requires `state == Connected && generation == myGen && webSocket != null`.
+  - **A death during the loop's 2 s stabilization window cancels the in-flight loop** before
+    starting a new one. The old `reconnectJob?.isActive` guard swallowed the `onClosed` that
+    arrived mid-window, so the loop kept driving a dead socket and reported success on it.
+  - **Liveness watchdog:** every 15 s, if state says Connected and there is no socket under it,
+    reconnect. OkHttp fires `onClosed`/`onFailure` only when it learns the socket is gone; with
+    `readTimeout(0)` and a 300 s ping, a black-holed route (Tailscale path change, network
+    switch) leaves the reader blocked for minutes with state still Connected.
+
 ## v0.1.886 (vc32) — 2026-10-17
 - **Frozen tool card, missing final answer (the "close and reopen shows it" bug).** The gateway
   routes each session's event frames to the **one transport stored on the session**. When the
