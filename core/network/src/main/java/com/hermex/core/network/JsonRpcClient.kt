@@ -95,6 +95,32 @@ class JsonRpcClient(
     /** Phase 0 trace: running count of each event name that has no parser arm. */
     private val unknownCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
+    /** Phase 1 replay watermark: highest gateway `seq` seen per live session id. */
+    private val lastSeenSeq = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Watermark the client holds for a live session id (0 = never received an event). */
+    fun lastSeenSeqFor(sessionId: String): Long = lastSeenSeq[sessionId] ?: 0L
+
+    /**
+     * `session.events.since` — replay the gateway's ring of event frames after
+     * `lastSeen`. Returns the recorded `params` objects, the server's `latest_seq`,
+     * and `truncated` (true = the ring window has moved past our watermark, so the
+     * client must refetch full history instead of trusting the tail).
+     */
+    suspend fun sessionEventsSince(sessionId: String, lastSeen: Long): SessionEventsSinceResult {
+        DebugLog.log("STATE", "SessionID",
+            "sessionEventsSince called sessionId=$sessionId lastSeen=$lastSeen")
+        val params = buildJsonObject {
+            put("session_id", JsonPrimitive(sessionId))
+            put("last_seen", JsonPrimitive(lastSeen))
+        }
+        val result: SessionEventsSinceResult = request("session.events.since", params, timeoutMs = 30_000)
+        DebugLog.log("TRACE", "replay",
+            "sid=${sessionId.take(8)} lastSeen=$lastSeen count=${result.count} " +
+            "latest=${result.latest_seq} truncated=${result.truncated}")
+        return result
+    }
+
     private var consumerJob: Job? = null
 
     // ── Lifecycle ──
@@ -245,6 +271,20 @@ class JsonRpcClient(
                 if (sid != null) "sid=${sid.take(8)}" else "sid=-"
             } ?: "sid=-"
             DebugLog.log("TRACE", "frame", "method=$method id=${rawId?.take(8)} $sessHash")
+
+            // Phase 1: record the gateway's per-session monotonic seq as a replay
+            // watermark. `tui_gateway/event_replay.py` stamps `seq` on every event
+            // frame and keeps a bounded ring, so `session.events.since(sid, last_seen)`
+            // can hand a reconnecting client exactly the frames it missed. The client
+            // never used this — the reconcile gate was guessing from message counts.
+            if (params != null) {
+                val sid = params["session_id"]?.jsonPrimitive?.content
+                val seq = params["seq"]?.jsonPrimitive?.content?.toLongOrNull()
+                if (sid != null && seq != null) {
+                    val prev = lastSeenSeq[sid] ?: 0L
+                    if (seq > prev) lastSeenSeq[sid] = seq
+                }
+            }
 
             when {
                 // Response to one of our requests
@@ -562,6 +602,16 @@ class JsonRpcClient(
         // Null on pre-feature rows; SessionSummary.lastActivityAt falls back to startedAt.
         @SerialName("last_activity_at") val last_activity_at: Double? = null,
         val is_active: Boolean? = null,
+    )
+
+    @Serializable
+    data class SessionEventsSinceResult(
+        val events: List<JsonObject> = emptyList(),   // recorded event frames' params objects
+        val latest_seq: Long = 0,
+        val truncated: Boolean = false,
+        val count: Int = 0,
+        val epoch: String = "",
+        val open_requests: List<JsonObject> = emptyList(),
     )
 
     @Serializable

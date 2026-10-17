@@ -1346,6 +1346,31 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                                 )
                                             }
                                         }
+                                        // Phase 1: ask the gateway for the frames we missed.
+                                        // `event_replay.py` keeps a bounded ring per session
+                                        // and stamps a monotonic seq on every event frame, so
+                                        // the client's watermark + `session.events.since` tells
+                                        // us exactly how many frames were dropped while the
+                                        // socket was down. `truncated` means the ring window
+                                        // moved past our watermark → full refetch is the only
+                                        // correct answer. Log the verdict; the reload below is
+                                        // still the reconcile action until replay is wired.
+                                        val liveSid = result.session_id
+                                        if (!liveSid.isNullOrEmpty()) {
+                                            try {
+                                                val lastSeen = rpcClient.lastSeenSeqFor(liveSid)
+                                                val replay = rpcClient.sessionEventsSince(liveSid, lastSeen)
+                                                DebugLog.log("TRACE", "replay_decision",
+                                                    "sid=${liveSid.take(8)} lastSeen=$lastSeen " +
+                                                    "count=${replay.count} latest=${replay.latest_seq} " +
+                                                    "truncated=${replay.truncated} " +
+                                                    "open_requests=${replay.open_requests.size} " +
+                                                    "action=${if (replay.truncated) "full_reload" else "replay_available"}")
+                                            } catch (e: Exception) {
+                                                DebugLog.log("TRACE", "replay_decision",
+                                                    "sid=${liveSid.take(8)} FAILED ${e.javaClass.simpleName}: ${e.message}")
+                                            }
+                                        }
                                         loadMessages()
                                     }
                                 } catch (e: Exception) {
