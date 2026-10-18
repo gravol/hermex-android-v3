@@ -51,9 +51,6 @@ object SecureStore {
                     EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
                 )
-                // Leftovers from the pre-fix plaintext fallback: shared_prefs/<name>.xml held
-                // credentials in the clear. Delete them whenever encryption works.
-                deletePlainPrefs(app, prefsName)
                 mode = SecretStorageMode.Secure
                 return prefs
             } catch (e: Exception) {
@@ -63,13 +60,15 @@ object SecureStore {
                         "${e.javaClass.simpleName}: ${e.message}",
                 )
                 DebugLog.log("SEC", "$prefsName:open_attempt_${attempt + 1}", e.javaClass.simpleName)
-                // A file written by the old plaintext fallback (or a half-written encrypted file)
-                // is what makes create() throw; deleting it is what lets the retry succeed.
-                runCatching { File(app.noBackupFilesDir, "$prefsName.xml").delete() }
+                // A file written by the old plaintext fallback (or a half-written encrypted file) is
+                // what makes create() throw; deleting it is what lets the retry succeed. This is the
+                // ONLY place the store file may be deleted — see [deleteStoreFile] for why the
+                // success path must never touch it.
+                deleteStoreFile(app, prefsName)
             }
         }
         mode = SecretStorageMode.SessionOnly
-        deletePlainPrefs(app, prefsName)
+        deleteStoreFile(app, prefsName)
         DebugLog.log(
             "SEC",
             "$prefsName:storage_mode",
@@ -78,10 +77,35 @@ object SecureStore {
         return InMemoryPreferences()
     }
 
-    /** The file the old fallback wrote: shared_prefs/<prefsName>.xml. */
-    private fun deletePlainPrefs(app: Context, prefsName: String) {
+    /**
+     * v0.1.891 follow-up (found on Pixel 8, 2026-10-18): the original cleanup called this from
+     * the SUCCESS path too. `EncryptedSharedPreferences.create` writes to
+     * `shared_prefs/<prefsName>.xml`, so deleting that file after a successful open deleted the
+     * encrypted store itself. Credentials therefore survived exactly one restart: the next launch
+     * read the file, deleted it, and `isConfigured=false` came back. Observed on device as
+     * login → force-stop → restore OK → force-stop → `no dashboard credentials stored`.
+     *
+     * Deletion belongs ONLY on the failure path: a file `create()` cannot open is by definition
+     * not a usable encrypted store (it is the old plaintext leftover or a half-written file), so
+     * removing it there is both safe and necessary.
+     */
+    private fun deleteStoreFile(app: Context, prefsName: String) {
         runCatching { app.deleteSharedPreferences(prefsName) }
+        // Pre-v0.1.891 leftovers occasionally landed in noBackupFilesDir; clean those too.
+        runCatching { File(app.noBackupFilesDir, "$prefsName.xml").delete() }
     }
+
+    /**
+     * Pure decision used by the tests: an encrypted store is identified by its Tink keyset marker
+     * (keys are SIV-encrypted, so credential key names never appear literally). A plaintext
+     * leftover from the old fallback has no marker and does name the keys.
+     */
+    fun isPlaintextLeftover(fileText: String): Boolean =
+        !fileText.contains(ENCRYPTED_MARKER) &&
+            (fileText.contains("dashboard_password") || fileText.contains("dashboard_url") ||
+                fileText.contains("server_url") || fileText.contains("api_key"))
+
+    private const val ENCRYPTED_MARKER = "__androidx_security_crypto_encrypted_prefs_key_keyset__"
 }
 
 /**

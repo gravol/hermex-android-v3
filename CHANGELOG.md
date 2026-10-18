@@ -1,3 +1,22 @@
+## v0.1.892 (vc38) — 2026-10-18
+- **Login stopped persisting after the Phase 3 cleanup — found on the Pixel 8 within minutes of
+  shipping v0.1.891.** `SecureStore.open` deleted `shared_prefs/<name>.xml` on the *success* path
+  too, meant as cleanup for the old plaintext fallback. That file is the encrypted store itself
+  (`EncryptedSharedPreferences.create` writes there), so every launch deleted the credentials it had
+  just read. Measured on device: sign in → force-stop → `restored dashboard credentials` →
+  force-stop → `no dashboard credentials stored → isConfigured=false`. Login survived exactly one
+  restart, i.e. the app looked unconfigured again on the next cold start.
+  - Deletion now happens only where it belongs: the failure path. A file `create()` cannot open is
+    by definition not a usable encrypted store (the old plaintext leftover, or a half-written file),
+    and deleting it there is what makes the retry-with-fresh-key succeed. The success path never
+    touches the store file.
+  - New pure predicate `SecureStore.isPlaintextLeftover(text)` distinguishes the two shapes by the
+    Tink keyset marker — an encrypted store's keys are SIV-encrypted, so credential key names never
+    appear literally; the old plaintext fallback names them directly.
+  - Tests: `SecretStorageAndBackupRulesTest` +2 (6 total) — asserts the success block contains no
+    delete call, that the failure path still deletes, and that the encrypted-store text is never
+    classified as a leftover.
+
 ## v0.1.891 (vc37) — 2026-10-18
 - **Audit Phase 3: secret storage fails closed, and the app opts out of cloud backup.**
   - `KeychainStore` and `CookiePersistor` each had their own silent plaintext fallback: on

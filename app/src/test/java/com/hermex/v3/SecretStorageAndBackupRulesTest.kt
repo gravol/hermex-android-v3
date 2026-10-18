@@ -1,5 +1,6 @@
 package com.hermex.v3
 
+import com.hermex.core.network.SecureStore
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -72,5 +73,49 @@ class SecretStorageAndBackupRulesTest {
             "the encryption claim must be derived from the storage mode",
             screen.contains("KeychainStore.isStorageEncrypted()"),
         )
+    }
+
+    /**
+     * v0.1.891 shipped a cleanup that deleted `shared_prefs/<name>.xml` after a **successful**
+     * encrypted open. That file is the encrypted store, so credentials survived exactly one
+     * restart (measured on Pixel 8: login → force-stop → restored → force-stop → unconfigured).
+     * The success path may never delete the store file; only the failure path may.
+     */
+    @Test
+    fun encryptedStoreIsNotDeletedOnTheSuccessPath() {
+        val src = read(
+            "core", "network", "src", "main", "java", "com", "hermex", "core", "network", "SecureStore.kt",
+        )
+        val start = src.indexOf("EncryptedSharedPreferences.create(")
+        val end = src.indexOf("return prefs", start)
+        assertTrue("open() success block found", start > 0 && end > start)
+        val successBlock = src.substring(start, end)
+        assertFalse(
+            "success path must not delete the store file",
+            successBlock.contains("deleteSharedPreferences") || successBlock.contains("deleteStoreFile"),
+        )
+        // Deletion must still exist for the failure path, or the plaintext-leftover retry breaks.
+        assertTrue("failure path still deletes the store", src.contains("deleteStoreFile(app, prefsName)"))
+    }
+
+    @Test
+    fun plaintextLeftoverDetectionKeepsTheEncryptedStore() {
+        val encrypted = """
+            <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+            <map>
+                <string name="AWEi/TqN9VMbY+mJheBQPIxtvXHQ61RG/WER/B/k3/XqWQ==">AVbFLjVudsDfntcgP4iRb2iAwgI</string>
+                <string name="__androidx_security_crypto_encrypted_prefs_key_keyset__">12a901224e7d5b576d92</string>
+            </map>
+        """.trimIndent()
+        val plaintext = """
+            <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+            <map>
+                <string name="dashboard_password">hunter2</string>
+                <string name="dashboard_username">jeff</string>
+            </map>
+        """.trimIndent()
+        assertFalse("the encrypted store is never a leftover", SecureStore.isPlaintextLeftover(encrypted))
+        assertTrue("the old plaintext fallback IS a leftover", SecureStore.isPlaintextLeftover(plaintext))
+        assertFalse("an unrelated file is not a leftover", SecureStore.isPlaintextLeftover("<map><int name=\"x\" value=\"1\"/></map>"))
     }
 }
