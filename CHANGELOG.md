@@ -1,3 +1,23 @@
+## v0.1.891 (vc37) — 2026-10-18
+- **Audit Phase 3: secret storage fails closed, and the app opts out of cloud backup.**
+  - `KeychainStore` and `CookiePersistor` each had their own silent plaintext fallback: on
+    `EncryptedSharedPreferences.create` failure they wrote dashboard credentials and live session
+    cookies into ordinary SharedPreferences while the Settings screen kept stating "Saved
+    credentials are encrypted on this device". A Keystore failure is exactly what happens after a
+    device transfer/restore — the common case. Both now delegate to `SecureStore`: create
+    encrypted, delete the broken prefs file, retry once with a fresh key, and if it still fails
+    keep secrets in an in-memory store only, reporting `SecretStorageMode.SessionOnly`. Nothing
+    sensitive reaches disk unencrypted, and Settings shows which mode it is actually in
+    (red warning + sign-in required each launch when SessionOnly).
+  - `allowBackup="false"`, and both rule files are excludes-only. They included `sharedpref` +
+    `database`, which shipped the plaintext Room DB — every chat message, tool output and thinking
+    card — to Google cloud backup and to device-transfer. The encrypted blobs were useless in a
+    backup anyway (the Tink master key stays in the local Keystore), so a restored phone read
+    nothing and reported `isConfigured=false`; re-login is now the honest, stated behaviour.
+  - Regression test `SecretStorageAndBackupRulesTest` (4 tests) asserts: no `allowBackup=true`,
+    no `<include domain="sharedpref"|"database">`, no `getSharedPreferences(` in either secret
+    store, and that the Settings claim is derived from the storage mode.
+
 ## v0.1.890 (vc36) — 2026-10-17
 - **The app sat "Connected" on a dead socket for 18 minutes while the gateway was healthy.**
   Testing on 2026-10-17 11:10 (a `ss -K "sport = :9119"` socket kill plus a dashboard restart)
