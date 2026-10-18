@@ -106,10 +106,18 @@ fun SettingsScreen(
 
             // ── Connection (v0.1.72): change server / credentials in-app ──
             Text("Connection", style = MaterialTheme.typography.titleSmall)
+            // v0.1.891: this line used to assert encryption unconditionally. Storage now fails
+            // closed (SecureStore), so say what the storage actually is.
+            val storageEncrypted = remember { KeychainStore.isStorageEncrypted() }
             Text(
-                "Server address, username and password for your Hermes gateway. Saved credentials are encrypted on this device.",
+                if (storageEncrypted) {
+                    "Server address, username and password for your Hermes gateway. Saved credentials are encrypted on this device."
+                } else {
+                    "Server address, username and password for your Hermes gateway. ⚠ Secure storage is unavailable on this device — credentials are kept in memory only and are not saved, so you will need to sign in again after each launch."
+                },
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (storageEncrypted) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error,
             )
 
             val keychainUrl = remember { KeychainStore.getDashboardUrl(context) }

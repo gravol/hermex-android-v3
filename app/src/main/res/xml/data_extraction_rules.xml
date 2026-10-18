@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
-        <include domain="sharedpref" path="." />
-        <include domain="database" path="." />
+        <!-- v0.1.891: see backup_rules.xml. Excludes only — no includes. -->
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="." />
     </cloud-backup>
     <device-transfer>
-        <include domain="sharedpref" path="." />
-        <include domain="database" path="." />
+        <!-- sharedpref was included here before: EncryptedSharedPreferences blobs transfer,
+             the master key does not, so a restored phone reads nothing and HermexApplication
+             reports isConfigured=false. Re-login is the honest behaviour. -->
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="." />
     </device-transfer>
 </data-extraction-rules>

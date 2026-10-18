@@ -2,9 +2,8 @@ package com.hermex.core.data.auth
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKeys
+import com.hermex.core.network.SecretStorageMode
+import com.hermex.core.network.SecureStore
 
 /**
  * Encrypted storage for Hermex credentials.
@@ -21,22 +20,18 @@ object KeychainStore {
 
     @Synchronized
     private fun getPrefs(context: Context): SharedPreferences {
-        return prefsMap.getOrPut(context.applicationContext) {
-            try {
-                val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-                EncryptedSharedPreferences.create(
-                    PREFS_NAME,
-                    masterKeyAlias,
-                    context.applicationContext,
-                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                )
-            } catch (e: Exception) {
-                Log.e("Hermex", "KeychainStore: EncryptedSharedPreferences failed, fallback to plain SP", e)
-                context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            }
-        }
+        return prefsMap.getOrPut(context.applicationContext) { SecureStore.open(context, PREFS_NAME) }
     }
+
+    /**
+     * v0.1.891 (audit finding #4/#5 chain): the old code fell back to **plaintext**
+     * SharedPreferences whenever `EncryptedSharedPreferences.create` threw — silently — while this
+     * screen kept claiming credentials were encrypted. A Keystore failure is precisely what
+     * happens after a device transfer/restore, so the silent case was the ordinary one. Storage now
+     * fails closed (see [SecureStore]): retry once with a fresh key, then keep secrets in memory
+     * only. This reports which of the two is true so the UI can never claim more than it does.
+     */
+    fun isStorageEncrypted(): Boolean = SecureStore.mode == SecretStorageMode.Secure
 
     fun save(context: Context, serverUrl: String, apiKey: String) {
         getPrefs(context).edit()

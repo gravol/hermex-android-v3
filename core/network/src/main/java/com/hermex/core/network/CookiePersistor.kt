@@ -3,32 +3,22 @@ package com.hermex.core.network
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKeys
 import okhttp3.Cookie
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Persists OkHttp session cookies to EncryptedSharedPreferences (AES-256 GCM).
+ * Persists OkHttp session cookies encrypted at rest (AES-256 GCM).
  * Used by [NetworkCookieJar] as its backing store. Session cookies are live
- * credentials — they get the same encryption as KeychainStore passwords.
+ * credentials — they get the same storage rules as KeychainStore passwords.
+ *
+ * v0.1.891 (audit finding #5): the old code fell back to plaintext SharedPreferences when the
+ * Keystore threw, which put live session cookies in the clear with no signal anywhere. Storage is
+ * delegated to [SecureStore], which fails closed: encrypted, retry once, then in-memory only.
  */
 class CookiePersistor(context: Context) {
 
-    private val prefs: SharedPreferences = try {
-        val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-        EncryptedSharedPreferences.create(
-            "hermex_cookies",
-            masterKeyAlias,
-            context.applicationContext,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    } catch (e: Exception) {
-        Log.e("Hermex", "CookiePersistor: EncryptedSharedPreferences failed, falling back to plain SP", e)
-        context.applicationContext.getSharedPreferences("hermex_cookies", Context.MODE_PRIVATE)
-    }
+    private val prefs: SharedPreferences = SecureStore.open(context, "hermex_cookies")
 
     /** Load all persisted cookies for a given host. */
     fun load(host: String): List<Cookie> {

@@ -11,9 +11,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Audit finding (2026-10-17): allowBackup=true plus <include domain="database"/> shipped
+         the entire chat history, tool output and thinking cards to Google cloud backup and
+         device-transfer, unencrypted. The Room DB is not encrypted and the Tink master key for
+         EncryptedSharedPreferences never leaves the Keystore, so a backup restored elsewhere
+         decrypts nothing and leaks only the chat. Opt out entirely. -->
     <application
         android:name=".HermexApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
