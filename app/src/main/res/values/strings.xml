@@ -6,4 +6,6 @@
     <string name="notification_channel_description">Keeps the chat connection alive when the app is in the background</string>
     <string name="notification_title">Hermex 3 AI</string>
     <string name="notification_text">Connected</string>
+    <!-- Shared label for the Stop action on both foreground-service notifications (v0.1.896, #19). -->
+    <string name="action_stop">Stop</string>
 </resources>

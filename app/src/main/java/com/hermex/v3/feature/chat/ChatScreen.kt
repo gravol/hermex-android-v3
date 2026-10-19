@@ -305,6 +305,22 @@ fun ChatScreen(
     var pendingVoiceB64 by remember { mutableStateOf<String?>(null) }
     var pendingVoiceDurSec by remember { mutableIntStateOf(0) }
 
+    // v0.1.896 (audit Phase 5): release the microphone when this screen leaves.
+    // The recorder was only ever released inside stopRecording(), so navigating away mid-recording —
+    // back out of the chat, opening the drawer, a notification taking you elsewhere — left a dead
+    // screen holding the mic: the system privacy indicator stayed on and other apps could not record.
+    // rememberUpdatedState so onDispose sees the recorder that exists at teardown, not the one from
+    // first composition (a plain capture would be null forever).
+    val recorderAtTeardown by rememberUpdatedState(recorder)
+    DisposableEffect(Unit) {
+        onDispose {
+            recorderAtTeardown?.let { rec ->
+                runCatching { rec.stop() }   // stop() throws for a very short recording; release() is what matters
+                rec.release()
+            }
+        }
+    }
+
     fun startRecording() {
         try {
             val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.webm")
@@ -1706,41 +1722,6 @@ private fun LiveThinkingTicker(text: String) {
     }
 }
 
-// v0.1.159: single-line live-thinking preview rendered INSIDE the main chat
-// list during streaming (see ChatScreen ~line 1246). The StreamLoop's
-// auto-scroll keys on the last item's content length, so this growing line is
-// what makes the chat follow while thinking — before it existed the main list
-// showed only a frozen spinner placeholder and never scrolled until the first
-// tool call. Kept visually quiet (dimmed monospace) so it reads as "thinking",
-// not an answer, and disappears once the turn ends.
-@Composable
-private fun LiveThinkingPreviewLine(text: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.Start,
-    ) {
-        Text(
-            text = "●",
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-            fontSize = 9.sp,
-            modifier = Modifier.padding(top = 1.dp, end = 6.dp),
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall.copy(
-                fontFamily = FontFamily.Monospace,
-                fontStyle = FontStyle.Italic,
-                fontSize = 11.sp,
-                lineHeight = 15.sp,
-            ),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
 
 // ── MESSAGE BUBBLE (Telegram-style) ──
 
@@ -1961,29 +1942,6 @@ private fun MessageBubble(
                 )
             }
         }
-    }
-}
-
-// ── THINKING TOGGLE (collapsed state) ──
-
-@Composable
-private fun ThinkingToggle(
-    expanded: Boolean,
-    onToggle: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggle)
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = if (expanded) "▼ Thinking" else "▶ Show thinking",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.tertiary,
-            fontWeight = FontWeight.SemiBold,
-        )
     }
 }
 
@@ -3674,7 +3632,6 @@ private fun ContextDetailsPanel(
                     Spacer(Modifier.height(20.dp))
                 }
                 // Compress affordance — always visible so it's reachable even at low usage
-                if (true) {
                     Button(
                         onClick = onCompress,
                         enabled = !isStreaming,
@@ -3699,14 +3656,6 @@ private fun ContextDetailsPanel(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
-                } else {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "No context pressure yet. Usage will appear after your next message.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    )
-                }
             }
         }
     }

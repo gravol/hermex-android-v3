@@ -222,6 +222,33 @@ object NotificationHelper {
         runCatching { NotificationManagerCompat.from(context).notify(turnNotificationId(sessionKey), notification) }
     }
 
+    /**
+     * The reply was submitted but no completion came back inside the wait window (v0.1.896, #18).
+     *
+     * This is deliberately NOT the same message as postReplyFailed, and it used to be reported as a
+     * finished turn. Nothing here can know which of the two happened — the prompt may have reached
+     * the gateway and produced a whole turn we simply never saw complete. So the copy says what the
+     * code knows and nothing more, and it keeps the Reply action so retrying is one tap.
+     */
+    fun postReplyTimedOut(context: Context, sessionKey: String, title: String, waitedMinutes: Int) {
+        ensureChannels(context)
+        val text = "No confirmation after $waitedMinutes minutes — your reply may not have been " +
+            "delivered. Tap Reply to try again."
+        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle((title.ifBlank { "Hermes" }) + " — no reply received")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(openSessionIntent(context, sessionKey, title))
+            .addAction(replyAction(context, sessionKey, title))
+            .build()
+        runCatching { NotificationManagerCompat.from(context).notify(turnNotificationId(sessionKey), notification) }
+        DebugLog.log("NOTIF", "Notify",
+            "postReplyTimedOut posted for $sessionKey (waited_min=$waitedMinutes)")
+    }
+
     /** Clear the stale turn-finished notification once a reply is submitted (v0.1.98). */
     fun cancelTurns(context: Context, sessionKey: String) {
         runCatching { NotificationManagerCompat.from(context).cancel(turnNotificationId(sessionKey)) }

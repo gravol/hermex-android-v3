@@ -31,6 +31,15 @@ class WsKeepaliveService : Service() {
         private const val NOTIFICATION_ID = 8080
         private const val CHANNEL_ID = "hermex_keepalive_channel"
 
+        /**
+         * Tapping Stop on the ongoing notification. v0.1.896 (audit Phase 6, #19): on Android 14+ an
+         * ongoing foreground-service notification is dismissible anyway, so the real gap was never
+         * "can it be swiped" — it was that nothing here let the user say "stop" and have the service
+         * actually stay stopped.
+         */
+        const val ACTION_STOP = "com.hermex.v3.action.STOP_KEEPALIVE"
+        private const val STOP_REQUEST_CODE = 8081
+
         /** Start the keepalive foreground service. Safe to call multiple times. */
         fun start(context: Context) {
             val intent = Intent(context, WsKeepaliveService::class.java)
@@ -93,7 +102,24 @@ class WsKeepaliveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Restart if killed by the system (e.g. due to temporary resource pressure)
+        if (intent == null) {
+            // A redelivered start with no intent means the SYSTEM restarted this service after
+            // killing the process (START_STICKY hands back a null intent). Nothing asked for it:
+            // there is no chat ViewModel behind this start, so the "connected" notification would be
+            // claiming a connection nobody owns and holding the process alive for a phantom. The next
+            // real WebSocket connect calls start() again, so this loses nothing.
+            DebugLog.log("STATE", "Keepalive",
+                "onStartCommand intent=null — system restart with no owner, stopping")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent.action == ACTION_STOP) {
+            DebugLog.log("STATE", "Keepalive", "stop requested from the notification")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // Started by the app on a real connect: restart if the system kills it under pressure.
         return START_STICKY
     }
 
@@ -136,6 +162,14 @@ class WsKeepaliveService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // v0.1.896 (#19): an explicit Stop, so "I turned this off" is something the user can do and
+        // that survives — see ACTION_STOP in onStartCommand.
+        val stopIntent = PendingIntent.getService(
+            this, STOP_REQUEST_CODE,
+            Intent(this, WsKeepaliveService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(getString(R.string.notification_title))
@@ -143,6 +177,7 @@ class WsKeepaliveService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)                // not swipeable
             .setContentIntent(pendingIntent)  // tap to open app
+            .addAction(0, getString(R.string.action_stop), stopIntent)
             .build()
     }
 }

@@ -108,6 +108,10 @@ class NtfySubscriptionService : Service() {
         private const val NOTIFICATION_ID = 8090
         private const val CHANNEL_ID = "ntfy_connection"
 
+        /** Stop from the notification — persists ntfy_enabled=false, see onStartCommand. */
+        const val ACTION_STOP = "com.hermex.v3.action.STOP_NTFY"
+        private const val STOP_REQUEST_CODE = 8091
+
         fun start(context: Context) {
             val intent = Intent(context, NtfySubscriptionService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -130,7 +134,24 @@ class NtfySubscriptionService : Service() {
         scope.launch { boot() }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            // The user turned push delivery off from its own notification. Persist it: MainActivity
+            // gates the auto-start on this setting, so without the write the next launch would
+            // resurrect a rail the user just stopped.
+            DebugLog.log("STATE", "Ntfy", "stop requested from the notification — persisting ntfy_enabled=false")
+            scope.launch {
+                runCatching { SettingsRepository(applicationContext).setNtfyEnabled(false) }
+            }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // Unlike WsKeepaliveService, a redelivered start with no intent is handled by boot(): it
+        // re-reads ntfy_enabled and stops itself when the user has the rail off, so the persisted
+        // setting — not the intent — is the authority here.
+        return START_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -271,6 +292,11 @@ class NtfySubscriptionService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val stopIntent = PendingIntent.getService(
+            this, STOP_REQUEST_CODE,
+            Intent(this, NtfySubscriptionService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("Hermex notifications connected")
@@ -278,6 +304,7 @@ class NtfySubscriptionService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
+            .addAction(0, getString(R.string.action_stop), stopIntent)
             .build()
     }
 }

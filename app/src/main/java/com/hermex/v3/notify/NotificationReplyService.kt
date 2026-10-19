@@ -154,13 +154,23 @@ class NotificationReplyService : Service() {
                 }
             } as? RpcNotification.MessageCompleted
 
-            val content = done?.content?.takeIf { it.isNotBlank() }
-                ?: "Your reply was sent."
-            // Same notification as a finished turn — carries the Reply action,
-            // so the loop continues. ID_TURNS replace-semantics avoid dupes if
-            // a chat VM is also watching this session.
-            NotificationHelper.postTurnFinished(this, sessionKey, title, content)
-            DebugLog.log("REPLY", "Service", "reply complete — notification posted")
+            if (done == null) {
+                // v0.1.896 (#18): this used to post a finished-turn notification reading
+                // "Your reply was sent." — an outcome the code does not have. withTimeoutOrNull
+                // returning null means no completion arrived, not that nothing happened: the prompt
+                // may well have reached the gateway and run a turn we never saw finish. Say what is
+                // known, and keep the Reply action so retrying is one tap.
+                val waitedMin = (REPLY_TIMEOUT_MS / 60_000L).toInt()
+                NotificationHelper.postReplyTimedOut(this, sessionKey, title, waitedMin)
+                DebugLog.log("REPLY", "Service",
+                    "timed out: no message.complete for $sessionKey within ${REPLY_TIMEOUT_MS / 1000}s")
+            } else {
+                val content = done.content?.takeIf { it.isNotBlank() } ?: "Your reply was sent."
+                // Same notification as a finished turn — carries the Reply action, so the loop continues.
+                // ID_TURNS replace-semantics avoid dupes if a chat VM is also watching this session.
+                NotificationHelper.postTurnFinished(this, sessionKey, title, content)
+                DebugLog.log("REPLY", "Service", "reply complete — notification posted")
+            }
         } catch (e: Exception) {
             DebugLog.log("REPLY", "Service", "reply failed: ${e.message}")
             NotificationHelper.postReplyFailed(this, sessionKey, title)
