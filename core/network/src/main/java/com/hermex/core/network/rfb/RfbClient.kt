@@ -3,6 +3,7 @@ package com.hermex.core.network.rfb
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
+import com.hermex.core.network.DebugLog
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
@@ -46,6 +47,51 @@ class RfbClient(
          *  the framebuffer (1440x900x4 = 5.2 MB for a full Raw update); anything above this
          *  is a desync, and allocating it is what OOM-killed the app. */
         const val MAX_READ = 8 shl 20
+
+        /**
+         * How many header bytes follow a server-to-client message type, and what payload length those
+         * header bytes describe (RFC 6143 §7.5.2, verified against the spec text and against what
+         * TigerVNC actually sends).
+         *
+         * This used be inline arithmetic in the read loop, and two of the three numbers were wrong in
+         * the direction that silently blanks the screen: Bell has NO payload (the old code consumed 7
+         * bytes — the following six belong to the next message), and SetColourMapEntries carries
+         * n colours x 3 channels x 2 bytes, which the old code never consumed at all. A short read
+         * here does not fail; every later rectangle header lands bytes off-centre and the picture goes
+         * blank while the connection stays up. It is kept as a pure function so the byte math can be
+         * tested from RFC fixtures without a socket.
+         */
+        @JvmStatic
+        internal fun headerLength(msgType: Int): Int = when (msgType) {
+            1 -> 5      // pad(1) + firstColour u16 + nColours u16
+            3 -> 7      // pad(3) + length u32
+            255 -> 17   // TigerVNC ServerFbUpdate header
+            else -> 0   // 0 = FramebufferUpdate (its own parser), 2 = Bell: no payload
+        }
+
+        /** Payload length described by [header]; 0 means "nothing follows". Throws for an unknown type. */
+        @JvmStatic
+        internal fun payloadLength(msgType: Int, header: ByteArray): Int = when (msgType) {
+            0, 2 -> 0
+            1 -> {
+                require(header.size >= 5) { "SetColourMapEntries header needs 5 bytes" }
+                val n = ((header[3].toInt() and 0xFF) shl 8) or (header[4].toInt() and 0xFF)
+                n * 6   // each colour is red, green, blue — U16 each. NOT n*3.
+            }
+            3 -> {
+                require(header.size >= 7) { "ServerCutText header needs 7 bytes" }
+                ((header[3].toInt() and 0xFF) shl 24) or ((header[4].toInt() and 0xFF) shl 16) or
+                    ((header[5].toInt() and 0xFF) shl 8) or (header[6].toInt() and 0xFF)
+            }
+            255 -> {
+                require(header.size >= 17) { "ServerFbUpdate header needs 17 bytes" }
+                ((header[13].toInt() and 0xFF) shl 24) or ((header[14].toInt() and 0xFF) shl 16) or
+                    ((header[15].toInt() and 0xFF) shl 8) or (header[16].toInt() and 0xFF)
+            }
+            else -> throw IOException(
+                "RFB protocol error: unknown server message type $msgType — ending the connection " +
+                "rather than reading an unknown payload and desyncing into a blank screen")
+        }
     }
 
     /** First n bytes as hex — handshake/frame evidence for the debug export. */
@@ -184,22 +230,23 @@ class RfbClient(
     private fun loop() {
         while (true) {
             val msgType = read(1)[0].toInt() and 0xFF
+            if (msgType == 0) { framebufferUpdate(); continue }
+            // Server numbering (TigerVNC): 1 = SetColourMapEntries, 2 = Bell, 3 = ServerCutText,
+            // 255 = ServerFbUpdate. The lengths come from headerLength/payloadLength so the byte math
+            // is one table, testable from RFC fixtures, instead of inline guesses — see those two
+            // functions for what was wrong before (Bell consumed 7 bytes it did not own; ColourMap's
+            // n*6 payload was never consumed at all).
+            val headLen = headerLength(msgType)
+            val head = if (headLen > 0) read(headLen) else ByteArray(0)
+            val payload = payloadLength(msgType, head)   // unknown type -> IOException, connection ends
+            if (payload > 0) read(payload)
             when (msgType) {
-                0 -> framebufferUpdate()
-                // Server numbering: 1 = SetColourMapEntries (pad + first-colour u16 +
-                // n-colours u16), 2 = Bell (pad + seconds u32). Consuming the wrong
-                // payload length desyncs the stream and blanks the picture.
-                1 -> read(5)
-                2 -> read(7)
-                255 -> {
-                    // TigerVNC ServerFbUpdate (compressed ring buffer). We never advertise
-                    // that pseudo-encoding, so treat it as a skip-and-log, not a string.
-                    val hdr = read(17)
-                    val size = u32(hdr, 13)
-                    read(size)
-                    Log.w(TAG, "ServerFbUpdate $size bytes (ring-buffer protocol not enabled)")
-                }
-                else -> { Log.w(TAG, "unknown server msg $msgType"); return }
+                255 -> Log.w(TAG,
+                    "ServerFbUpdate $payload bytes (ring-buffer protocol not enabled)")
+                3 -> DebugLog.log("INFO", "BOT",
+                    "ServerCutText ${payload} bytes ignored (clipboard not mirrored)")
+                1 -> DebugLog.log("INFO", "BOT",
+                    "SetColourMapEntries consumed cleanly (header=$headLen payload=$payload)")
             }
         }
     }
