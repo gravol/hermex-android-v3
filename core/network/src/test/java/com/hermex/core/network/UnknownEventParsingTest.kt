@@ -226,16 +226,31 @@ class UnknownEventParsingTest {
 
     // ── session.title — payload {session_id, title}, both required ───────────────────
 
-    @Test fun sessionTitleFromJournalParsesTypedWithTheStoredKey() {
+    @Test fun sessionTitleFromJournalKeepsBothIds() {
         // Verbatim from a trial journal (`unknown event: session.title — rawParams={…}`, seq 3532).
-        // Note the two ids differ and that is the whole point of this test: the FRAME is addressed to
-        // the live sid (34b8c2a1), while the payload names the STORED KEY (20261018_212611_2a120c).
-        // The chat header guard compares against the stored key, so parsing must keep the payload one.
+        // The frame is addressed to the session ID; the payload names the server's session KEY. Both are
+        // kept: `sessionId` is what the ViewModel's sid gate routes on, `storedKey` is for audit only.
         val n = parseFrame("""{"type":"session.title","session_id":"34b8c2a1","payload":{"session_id":"20261018_212611_2a120c","title":"List OpenEQ RE files with descriptions"},"seq":3532}""")
         assertTrue("got ${n::class.simpleName}", n is RpcNotification.SessionTitle)
         n as RpcNotification.SessionTitle
-        assertEquals("20261018_212611_2a120c", n.sessionId)
+        assertEquals("34b8c2a1", n.sessionId)
+        assertEquals("20261018_212611_2a120c", n.storedKey)
         assertEquals("List OpenEQ RE files with descriptions", n.title)
+    }
+
+    /**
+     * The case that broke on device (Pixel 8, v0.1.896, chat created in-app): `session.create` returned
+     * id `18c053ac`, and the title event arrived addressed to that id while naming the session key
+     * `20261019_191332_38e061`. Putting the KEY into `sessionId` made the sid gate drop it —
+     * `disp=FILTERED … nSid=20261019_191332_38e061 dbKey=18c053ac` — so the header never renamed.
+     * Ids are from that live run; the title text is illustrative.
+     */
+    @Test fun anInAppCreatedChatHasADifferentFrameIdAndSessionKey() {
+        val n = parseFrame("""{"type":"session.title","session_id":"18c053ac","payload":{"session_id":"20261019_191332_38e061","title":"What is the RFB Bell message used for"},"seq":3}""")
+        assertTrue("got ${n::class.simpleName}", n is RpcNotification.SessionTitle)
+        n as RpcNotification.SessionTitle
+        assertEquals("routing id must be the frame's, not the key", "18c053ac", n.sessionId)
+        assertEquals("20261019_191332_38e061", n.storedKey)
     }
 
     @Test fun sessionTitleBlankOrMissingFallsBackToUnknown() {

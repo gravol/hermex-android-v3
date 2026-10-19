@@ -554,15 +554,20 @@ class JsonRpcClient(
             )
 
             "session.title" -> {
-                // contracts/events.py::SessionTitlePayload — {session_id, title}, both required.
-                // A blank title would replace a real header with nothing, so an empty string is
-                // treated as a malformed frame and falls back to Unknown like any other drift.
+                // contracts/events.py::SessionTitlePayload — {session_id, title}. `session_id` here is
+                // the server's SESSION KEY; the frame itself is addressed to the session ID
+                // (prompt_turn.py: `_title_key = session.get("session_key") or sid`, emitted against `sid`).
+                // Measured on device: for a chat created in-app those two differ (frame sid=18c053ac,
+                // key=20261019_191332_38e061), and putting the key in `sessionId` made the ViewModel's
+                // own sid gate drop the event as FILTERED — the one case where a title matters. So the
+                // frame id stays the routing id and the key is carried separately.
                 val p = params["payload"] as? JsonObject
                 val title = p?.strField("title")
                 if (title.isNullOrBlank()) unknownFallback(eventType, params, sessionId)
                 else RpcNotification.SessionTitle(
-                    sessionId = p?.strField("session_id") ?: sessionId,
+                    sessionId = sessionId,
                     title = title,
+                    storedKey = p?.strField("session_id"),
                 )
             }
 

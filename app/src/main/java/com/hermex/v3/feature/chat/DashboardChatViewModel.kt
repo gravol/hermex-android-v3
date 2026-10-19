@@ -2153,20 +2153,18 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
 
             is RpcNotification.SessionTitle -> {
                 // Auto-titling named this session. Until now the phone kept whatever placeholder it
-                // invented at open (`sessionId.take(16)`) and the real name only appeared after a
-                // reopen — which is the one moment a title matters, right after the first turn.
-                // Guarded on the STORED KEY (payload.session_id, per SessionTitlePayload) so a rename
-                // for another chat can never overwrite this header.
-                if (n.sessionId == null || n.sessionId == sessionId) {
-                    sessionTitle = n.title
-                    uiState = uiState.copy(sessionTitle = n.title)
-                    DebugLog.log("STATE", "DashboardChat",
-                        "session.title applied — header renamed (titleLen=${n.title.length})")
-                } else {
-                    DebugLog.log("TRACE", "proto",
-                        "name=session.title disp=FILTERED reason=other_session " +
-                            "sid=${n.sessionId?.take(8)} dbKey=${sessionId?.take(8)}")
-                }
+                // invented at open ("New session" / the create-time id) and the real name only appeared
+                // after a reopen — which is the one moment a title matters, right after the first turn.
+                // No id guard here, deliberately: the sid gate above has already routed this frame to this
+                // ViewModel, and comparing against the payload's session KEY is what broke on device — for
+                // an in-app-created chat the frame id (18c053ac) and the server's session key
+                // (20261019_191332_38e061) legitimately differ, so a key comparison dropped the event.
+                // Both ids are logged so that relationship stays auditable.
+                sessionTitle = n.title
+                uiState = uiState.copy(sessionTitle = n.title)
+                DebugLog.log("STATE", "DashboardChat",
+                    "session.title applied — header renamed (titleLen=${n.title.length} " +
+                        "sid=${n.sessionId?.take(8)} key=${n.storedKey?.take(24)} dbKey=${sessionId?.take(8)})")
             }
 
             // ── Parsed-but-unrendered protocol events (see ProtocolTrace.kt) ──

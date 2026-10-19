@@ -227,6 +227,9 @@ sealed class RpcNotification {
     data class SessionTitle(
         override val sessionId: String?,
         val title: String,
+        /** The server's stored session key (`session_key`), which is NOT the id the frame is addressed
+         *  to. Kept separately on purpose — see the KDoc above and the device note in the changelog. */
+        val storedKey: String? = null,
     ) : RpcNotification()
 
     // ── Transient status line (status.update) ──
