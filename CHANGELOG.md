@@ -19,6 +19,15 @@
     old blank row from an aborted turn reloading on every poll.
   - `gate_poll` now logs `turnDoneSeen=` and `blankFinalRow=`. Without those two inputs the D/14 log
     read as "nothing to do", which is why the failure looked unexplained for a day.
+- **Known limitations, from an external review round of this change (GPT/Grok/Claude, same brief).**
+  - The drop was NOT causal in D/14: that turn's frames end 01:08:11 and the socket was killed at
+    01:08:16, so the row was already blank on a live socket. The trigger is not network-specific, and
+    the earlier description "the turn completes during the disconnect window" was wrong.
+  - Rule D covers only the foreground-poll gate. The reconnect gate (`DashboardChatViewModel.kt:1339`)
+    still requires something streaming or an open tool card, so a blank non-streaming row is not
+    reconciled there — recovery waits for the next poll instead of happening on rebind.
+  - Whether the server's own final message had content in D/14 was never captured; if it was blank too,
+    no client-side reload can surface an answer. No test covers "reloaded and still blank".
 - **Verification.** Unit: `ReconcileBlankTurnTest` (6 cases, incl. a blank row while the server is
   still running, which must NOT reload) — 25 tests green. Mutation-checked: disabling rule D fails
   exactly the two D/14 assertions and nothing else. Device, scenario D (socket kill at submit +20 s):
