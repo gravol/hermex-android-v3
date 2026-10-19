@@ -1,3 +1,33 @@
+## v0.1.897 (vc43) — 2026-10-19 — session.title routed by frame id; Connection/Push Delivery rewritten for a second user
+
+- **`session.title` never renamed an in-app chat header (fixed, device-verified).** The full diagnosis,
+  the two-id pair from the live run and the re-test are written up under the v0.1.896 section below
+  ("Phase 2 confirmed on device…"). Shipping side: `JsonRpcClient` keeps the frame's session id as the
+  routing id and carries the server's `session_key` separately as `storedKey`; the ViewModel arm drops
+  its key comparison because the sid gate has already routed the frame. Two parser tests pin both ids.
+- **Everything a second user needs to type is now labelled as theirs.** Onboarding pre-filled
+  `http://100.80.204.66:9119` — one developer's tailnet address — and had no username field: the app
+  signed every installer in as `"jeff"` through defaults in `DashboardApiClient`, `KeychainStore`,
+  `HermexApplication` and the setup ViewModel. A fresh install therefore failed login against an account
+  that does not exist on their gateway, and the error said "check password". There is now an explicit
+  Username field, no default anywhere in the credential path, and a blank username is rejected with its
+  own message. Placeholders/supporting text state what to enter (gateway web port 9119, Tailscale/VPN or
+  https address, the login from that gateway's web UI) and that Hermex has no server or account system
+  of its own.
+- **Push Delivery stopped pretending the developer's ntfy fleet is shared infrastructure.** The section
+  said "Keep the defaults for the Hermes fleet" while the compiled-in defaults are one self-hosted ntfy
+  host and four topics nobody else publishes to; a new user got a subscription that never connects. It
+  now says push is optional and separate from the chat connection, that you need your own ntfy server
+  plus a Hermes side publishing to the same topic names, and that access tokens / password-protected
+  topics are NOT supported yet (no auth header anywhere in `NtfySubscriptionService` — confirmed by grep,
+  so it is documented as a limit rather than left to fail). When nothing is saved the section prints the
+  built-in values in numbers and marks them as the developer's, instead of pre-filling them into the
+  fields where they read as the user's own setting.
+- **Not verified on device yet:** the settings/onboarding copy changes are compile- and test-verified only
+  (Gradle unit tests + release build for this version). A fresh-install walkthrough — clear credentials,
+  set up from scratch, check the second-user path — still needs a phone pass. Installs that already
+  saved credentials see no behaviour change.
+
 ## v0.1.896 (vc42) — 2026-10-19 — audit Phases 2, 4, 5, 6, 8: lifecycle, honest notifications, protocol arms, RFB byte math
 
 - **Phase 5 — held chat ViewModels and the microphone.** `ChatScreen` released its `MediaRecorder` only
@@ -96,10 +126,29 @@
   versionName=0.1.896`) rather than trusting the build output path. On the Pixel 8 (`39151FDJH00HX4`):
   installs over v0.1.894, cold start `TotalTime: 2269 ms` with the 70 MB journal pair present, process
   alive, no ANR — that is the startup fix measured against the fixture that caused it.
-- **Not verified on device yet, stated plainly:** the notification arms and `session.title` rendering need a
-  live gateway connection, and the phone's Tailscale has been down since it rebooted at 09:46 — the app's
-  `ENETUNREACH` on `100.80.204.66:9119` is the tailnet being down, not an app fault. Same for Phase 4's
-  on-device half (a Bell during a live bot screen). Those wait for the tailnet link to be back on.
+- **Not verified at the time of writing, then verified — with one of my own diagnoses corrected.** I first
+  wrote that the phone's Tailscale had been down since its reboot; the `ENETUNREACH` was real, but my check
+  was wrong: Android's interface is `tun0`, not `tailscale0`, and `ip addr show tailscale0` finds nothing on
+  a healthy device. Opening the Tailscale app brought the VPN up (`tun0 100.101.185.85/32`, route
+  `100.64.0.0/10`, ping to BigRed 5.6 ms) and the app reconnected immediately. With that fixed, the
+  connected checks were run on the Pixel 8 and one of them found a real bug — see the next bullet.
+- **Phase 2 confirmed on device, and `session.title` needed a second fix that only the device could show.**
+  After the v0.1.896 process start (`app process start (v0.1.896)` at ts 1792433853) the journal contains
+  **zero** `unknown event:` lines, where the same file holds 230 of them from earlier builds; the typed arm
+  instead logs `TRACE|proto|name=platforms.changed count=1 … signal`, and the volume gate suppressed the
+  rest of the burst while keeping the count.
+  `session.title` arrived but was dropped: `disp=… type=session.title disp=FILTERED nSid=20261019_191332_38e061
+  dbKey=18c053ac`. Cause, from the gateway source (`prompt_turn.py`: `_title_key = session.get("session_key")
+  or sid`, emitted against `sid`): a title frame is addressed to the **session id** while its payload names
+  the **session key**, and for a chat created inside the app those two differ — `session.create` returned
+  `18c053ac`, the key is `20261019_191332_38e061`. My parser had put the key into `sessionId`, which is the
+  field the ViewModel's sid gate routes on, so the gate filtered it out — in exactly the case where a title
+  matters. Fixed by keeping the frame id as the routing id and carrying the key separately (`storedKey`),
+  with no id guard in the arm because the gate has already routed the frame. Re-tested on the same device:
+  `type=session.title disp=APPLIED` on the owning VM, `session.title applied — header renamed (titleLen=30
+  sid=45e66970 key=20261019_193355_2d9a1c …)`, a second open ViewModel correctly logging `disp=FILTERED`
+  (so cross-chat titles still can't leak), and the screenshot showing the header changed from "New session"
+  to the new title. Two parser tests now pin the id pair from that live run; total for that file 18 tests.
 
 ## v0.1.895 (vc41) — 2026-10-19 — R8 keep rules retargeted at the real package; QA harness checked in
 - **What was wrong (audit finding #21, Phase 7):** every package-scoped rule in `app/proguard-rules.pro` named `com.hermex.android.*` — the frozen v2 package. This app is `com.hermex.v3`, with DTOs in `com.hermex.core.network` and `com.hermex.core.data`. So `-keep class com.hermex.android.HermexApplication`, the Retrofit interface keeps for `.data.remote.**`, the `**$$serializer` / `Companion` / `serializer()` keeps, and the blanket `.data.** .model.** .domain.** .di.** .ui.**` keeps all matched nothing. Release builds are minified (`isMinifyEnabled = true`, `isShrinkResources = true`), so this was live config, not dead text.
