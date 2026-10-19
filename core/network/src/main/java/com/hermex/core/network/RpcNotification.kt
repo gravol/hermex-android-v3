@@ -211,6 +211,114 @@ sealed class RpcNotification {
         override val sessionId: String? = null,
     ) : RpcNotification()
 
+    /**
+     * Auto-titling renamed a session (`session.title`).
+     *
+     * Server: `tui_gateway/prompt_turn.py:804` — the `_on_session_title` hook after the first
+     * turn names the session. Contract: `contracts/events.py::SessionTitlePayload` —
+     * `{session_id, title}`, both required, and `session_id` is the STORED KEY (the same value
+     * this client uses as its `sessionId`), not the live sid.
+     *
+     * This one has a real surface, so it is rendered rather than traced: without it the phone
+     * keeps showing the placeholder title it made for itself (`sessionId.take(16)`) after the
+     * agent named the chat, until the app is reopened. Observed 1x in the trial journals — rare
+     * because it fires once per new session, which is exactly when the user is looking at it.
+     */
+    data class SessionTitle(
+        override val sessionId: String?,
+        val title: String,
+    ) : RpcNotification()
+
+    // ── Transient status line (status.update) ──
+
+    /**
+     * A transient status line about the turn — explicitly NOT transcript content, so it must
+     * never be appended to a message bubble.
+     *
+     * Server: `tui_gateway/server.py::_status_update` → `_emit("status.update", sid,
+     * {kind, text})`, plus direct emitters in `prompt_turn.py` (goal / loop) and
+     * `session_notifications.py` (loop / heartbeat / background-process notices).
+     * Contract: `contracts/events.py::StatusUpdatePayload` — `kind` and `text` are both required.
+     * Kinds actually observed in the D_* trial journals: process, lifecycle, compacting,
+     * compacted; the contract also names status, goal, loop, heartbeat.
+     *
+     * Hermex has no transient-status surface today, so this is parsed for the protocol trace
+     * only (see `feature/chat/ProtocolTrace.kt`) — not rendered.
+     */
+    data class StatusUpdate(
+        override val sessionId: String?,
+        val kind: String,
+        val text: String,
+    ) : RpcNotification()
+
+    // ── Agent-owned background process output (agent.terminal.output) ──
+
+    /**
+     * One output chunk from a background process the agent started.
+     *
+     * Server: `session_notifications.py:838` — `process_registry.on_output` →
+     * `_emit("agent.terminal.output", _owner_sid(session), {process_id, chunk})`.
+     * Contract: `contracts/events.py::TerminalOutputPayload` — both fields required; `chunk`
+     * is raw stdout/stderr, so it may be any bytes including newlines, and may be empty.
+     * Note `_owner_sid()` returns "" when the process was already pruned, so `sessionId` is
+     * nullable here. Paired with `terminal.close` (`{process_id}`), which the trials never
+     * emitted and which stays unparsed until there is a process surface to close.
+     *
+     * No UI surface exists for this in Hermex v3 — parsed for trace only, not rendered.
+     */
+    data class TerminalOutput(
+        override val sessionId: String?,
+        val processId: String,
+        val chunk: String,
+    ) : RpcNotification()
+
+    // ── Background self-improvement review (review.summary) ──
+
+    /**
+     * The agent's background review of the last turn finished (e.g. "patched a skill").
+     *
+     * Server: `server.py:1170` — `agent.background_review_callback` →
+     * `_emit("review.summary", sid, {text})`. Contract:
+     * `contracts/events.py::ReviewSummaryPayload` — `text` required.
+     *
+     * Not transcript content: it describes work done on the agent's own memory, not the
+     * answer. No surface exists for it in Hermex v3, so it is parsed for trace only.
+     */
+    data class ReviewSummary(
+        override val sessionId: String?,
+        val text: String,
+    ) : RpcNotification()
+
+    // ── Filesystem change signals (change_watcher broadcasts) ──
+
+    /**
+     * `cron/jobs.json` moved — the cron job definitions changed server-side.
+     * Like [SessionChanged] this is a global broadcast with an EMPTY `session_id`, and its
+     * payload is `{}` by contract (`contracts/events.py::ChangeSignalPayload`: no required
+     * fields, extra=allow). Emitted by `tui_gateway/change_watcher.py:287` on an mtime poll
+     * floored at 1 s.
+     *
+     * The client's Cron screen fetches jobs imperatively when opened
+     * (`DashboardApiClient.cronJobs()` from a Composable `remember` block); there is no state
+     * holder to invalidate, so this is parsed for trace only. See ProtocolTrace.kt.
+     */
+    data class CronChanged(
+        override val sessionId: String? = null,
+    ) : RpcNotification()
+
+    /**
+     * `gateway_state.json` moved — platform (Telegram/Discord/…) connection state changed.
+     * Same broadcast shape as [CronChanged]; emitted by `change_watcher.py:292` with a 5 s
+     * floor, which is why it dominates the unknown-event counts in the trial journals.
+     *
+     * Hermex v3 has no platform-status surface (the only related call is
+     * `DashboardApiClient.cronDeliveryTargets()`, inside the cron editor), so this is parsed
+     * for trace only, not rendered.
+     */
+    data class PlatformsChanged(
+        override val sessionId: String? = null,
+    ) : RpcNotification()
+
     // ── Fallback for unrecognized events ──
 
     data class Unknown(

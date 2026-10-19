@@ -1,7 +1,10 @@
 package com.hermex.core.network
 
 import android.content.Context
+import java.io.BufferedReader
 import java.io.File
+import java.io.FileInputStream
+import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.text.SimpleDateFormat
@@ -259,19 +262,58 @@ object DebugLog {
         }
     }
 
-    /** Read the trailing [maxBytes] of a journal file as entries (oldest first). */
-    private fun readTail(f: File, maxBytes: Long): List<Entry> {
+    /**
+     * Read the trailing [maxBytes] of a journal file as entries (oldest first).
+     *
+     * This used to be `f.readLines()` with a byte budget applied afterwards over the resulting list —
+     * i.e. the WHOLE file was read and split, on the main thread, from `Application.onCreate`. That was
+     * invisible while the journal rotated at 2 MB; it became a startup ANR once debug/harness builds raise
+     * the rotation ceiling (v0.1.894) and the previous session's file is routinely tens of megabytes: with
+     * a 64 MB + 6.3 MB pair on the Pixel, startup blocked past 15 s and the system killed the process
+     * before MainActivity drew a frame ("failed to complete startup", three launches in a row). Seeking to
+     * the tail bounds the work by the budget instead of by the file size.
+     *
+     * A byte seek can land inside a UTF-8 sequence; that first partial line is dropped, which is also what
+     * makes the entry list start on a real line boundary. Parsing is additionally capped at MAX_ENTRIES,
+     * since nothing older than the ring buffer could be shown anyway.
+     */
+    internal fun readTail(f: File, maxBytes: Long): List<Entry> {   // internal: byte-budget tests without a Context
         if (maxBytes <= 0) return emptyList()
-        val all = f.readLines()
-        var bytes = 0L
-        var startIdx = 0
-        for (i in all.indices) {
-            bytes += all[i].length + 1
-            if (bytes > maxBytes) { startIdx = i; break }
-            startIdx = i + 1
+        val size = f.length()
+        if (size == 0L) { lastTailBytesTouched = 0L; return emptyList() }
+        val start = maxOf(0L, size - maxBytes)
+        var touched = 0L
+        val lines = ArrayList<String>()
+        val counting = object : java.io.FilterInputStream(FileInputStream(f)) {
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                val n = super.read(b, off, len)
+                if (n > 0) touched += n
+                return n
+            }
         }
-        return all.subList(startIdx, all.size).mapNotNull { parseLine(it) }
+        counting.use { input ->
+            var toSkip = start
+            while (toSkip > 0) {
+                val skipped = input.skip(toSkip)
+                if (skipped <= 0) break
+                toSkip -= skipped
+            }
+            BufferedReader(InputStreamReader(input, Charsets.UTF_8)).useLines { src ->
+                src.forEach { lines.add(it) }
+            }
+        }
+        // Measured, not asserted from the budget: a whole-file implementation reports the file size here
+        // and that is exactly the regression these tests guard.
+        lastTailBytesTouched = touched
+        if (start > 0 && lines.isNotEmpty()) lines.removeAt(0)   // partial line at the seek point
+        val tail = if (lines.size > MAX_ENTRIES) lines.subList(lines.size - MAX_ENTRIES, lines.size) else lines
+        return tail.mapNotNull { parseLine(it) }
     }
+
+    /** Test seam: bytes the most recent readTail call actually touched. Guards the ANR from coming back —
+     *  a `readLines()` implementation reports the whole file, whatever budget it was handed. */
+    internal var lastTailBytesTouched = -1L
+        private set
 
     private fun parseLine(line: String): Entry? {
         // ts | level | tag | message  (newlines encoded as \u0001)

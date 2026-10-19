@@ -240,7 +240,6 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             "init() — sessionId ASSIGNED: old=$oldSid new=$sessionId (DB key) title=$sessionTitle")
         connectWsAndStart()
         loadReasoningFromConfig()
-        loadYoloStatus(false)
     }
 
     /**
@@ -2152,6 +2151,48 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 DebugLog.log("RPC", "DashboardChat", "sessions.changed — SessionsVM will reload")
             }
 
+            is RpcNotification.SessionTitle -> {
+                // Auto-titling named this session. Until now the phone kept whatever placeholder it
+                // invented at open (`sessionId.take(16)`) and the real name only appeared after a
+                // reopen — which is the one moment a title matters, right after the first turn.
+                // Guarded on the STORED KEY (payload.session_id, per SessionTitlePayload) so a rename
+                // for another chat can never overwrite this header.
+                if (n.sessionId == null || n.sessionId == sessionId) {
+                    sessionTitle = n.title
+                    uiState = uiState.copy(sessionTitle = n.title)
+                    DebugLog.log("STATE", "DashboardChat",
+                        "session.title applied — header renamed (titleLen=${n.title.length})")
+                } else {
+                    DebugLog.log("TRACE", "proto",
+                        "name=session.title disp=FILTERED reason=other_session " +
+                            "sid=${n.sessionId?.take(8)} dbKey=${sessionId?.take(8)}")
+                }
+            }
+
+            // ── Parsed-but-unrendered protocol events (see ProtocolTrace.kt) ──
+            // The five events the trial journals used to log as `unknown event`. They are typed
+            // now, but NONE of them has an existing surface to wire into, so each gets one
+            // bounded TRACE line instead of being rendered. That is a deliberate refusal to
+            // invent UI, not an oversight:
+            //  • status.update — a transient status line (kinds seen live: process, lifecycle,
+            //    compacting, compacted; contract also names goal/loop/heartbeat/status). The chat
+            //    UI has no transient-status slot, and appending it to a bubble would put
+            //    server-marked-transient text permanently into the transcript.
+            //  • agent.terminal.output — stdout of an agent-owned background process. There is no
+            //    process surface anywhere in the app (`process_id` appears in no client model), so
+            //    there is nothing to append these chunks to.
+            //  • review.summary — the agent's self-improvement review of the last turn. Not
+            //    transcript content, and there is no notice/inbox surface in-app to hold it.
+            //  • cron.changed / platforms.changed — change_watcher signals whose payload is `{}`
+            //    by contract ("refetch X"). The session list already has its own signal
+            //    (sessions.changed → SessionsViewModel reload); the cron list is fetched
+            //    imperatively inside CronScreen's `remember` with no state holder to invalidate,
+            //    and platform status has no screen at all. Refetching from here would mean
+            //    inventing both a cache and an invalidation path.
+            is RpcNotification.StatusUpdate, is RpcNotification.TerminalOutput,
+            is RpcNotification.ReviewSummary, is RpcNotification.CronChanged,
+            is RpcNotification.PlatformsChanged -> traceUnrenderedEvent(n)
+
             is RpcNotification.Unknown -> {
                 Log.w("Hermex", "DashboardChat: unknown event: ${n.eventType}")
                 DebugLog.log("RPC", "DashboardChat", "unknown event: ${n.eventType} — rawParams=${n.rawParams?.toString()?.take(200)}")
@@ -2176,6 +2217,24 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         if (forcedClosed) {
             DebugLog.log("RPC", "DashboardChat", "v0.1.137: turn already completed but a placeholder was still streaming — force-closed to clear spinner")
         }
+    }
+
+    /** Volume gate for protocol-trace lines, per event name (see ProtoTraceGate). */
+    private val protoTraceGate = ProtoTraceGate()
+
+    /**
+     * One structured TRACE line for an event that is parsed but has no UI surface. Ids and
+     * counts only — NEVER payload text: the debug journal is shareable and these payloads carry
+     * raw process output, review text and provider-retry status lines.
+     *
+     * Bounded because `platforms.changed` fires on a 5 s floor; see [ProtoTraceGate]. The frame's
+     * own disposition line (`dispLine`, above) already proves delivery per frame — this line adds
+     * the payload-independent fields (kind / process id / lengths) that explain what arrived.
+     */
+    private fun traceUnrenderedEvent(n: RpcNotification) {
+        val line = ProtocolTrace.plan(n) ?: return
+        if (!protoTraceGate.shouldLog(line.name)) return
+        DebugLog.log("TRACE", "proto", ProtocolTrace.format(line, protoTraceGate.countOf(line.name), n))
     }
 
     override fun toggleTodosExpanded() {
@@ -2382,21 +2441,9 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     }
 
     // ── YOLO mode (v0.1.4) — session-scoped approval-skip toggle ──
-    // Mirrors the WebUI's cmdYolo: session-scoped, not persisted. Loads the
-    // current state from the server, and toggles on button press.
+    // Mirrors the WebUI's cmdYolo: session-scoped, not persisted. The current state arrives with
+    // session.info, which any surface can update server-side.
 
-    /**
-     * Load the current YOLO state for the composer button.
-     *
-     * The authoritative yolo flag lives in session.info (server-side, updated
-     * live by any surface), so the button reads it there — no separate REST
-     * call needed. This stub exists to keep the contract; the button's initial
-     * and live state is populated in the SessionInfo handler.
-     */
-    override fun loadYoloStatus(desiredEnabled: Boolean) {
-        // no-op — yoloEnabled is populated from session.info (see
-        // RpcNotification.SessionInfo handler)
-    }
 
     /**
      * Toggle YOLO mode on/off for this session.

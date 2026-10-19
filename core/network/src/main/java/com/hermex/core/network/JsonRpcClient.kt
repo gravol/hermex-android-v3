@@ -553,18 +553,66 @@ class JsonRpcClient(
                 sessionId = sessionId,
             )
 
-            else -> {
-                // Phase 0 trace: count each dropped event name. A dropped tool.started
-                // or run.failed is a competing hypothesis for the frozen tool card, so
-                // the audit needs the name and the running count, not a silent Unknown.
-                val n = unknownCounts.merge(eventType, 1) { a, b -> a + b }
-                DebugLog.log("TRACE", "unknown_event", "name=$eventType count=$n sid=${sessionId?.take(8)}")
-                RpcNotification.Unknown(
-                    eventType = eventType,
-                    rawParams = params,
-                    sessionId = sessionId,
+            "session.title" -> {
+                // contracts/events.py::SessionTitlePayload — {session_id, title}, both required.
+                // A blank title would replace a real header with nothing, so an empty string is
+                // treated as a malformed frame and falls back to Unknown like any other drift.
+                val p = params["payload"] as? JsonObject
+                val title = p?.strField("title")
+                if (title.isNullOrBlank()) unknownFallback(eventType, params, sessionId)
+                else RpcNotification.SessionTitle(
+                    sessionId = p?.strField("session_id") ?: sessionId,
+                    title = title,
                 )
             }
+
+            // ── The five events the D_* trial journals logged as `unknown event`. Names and
+            // payload shapes verified against the emitters and contracts/events.py; each type's
+            // KDoc in RpcNotification.kt carries the emission site. Where the server contract
+            // marks a field required, a frame missing it falls back to Unknown rather than
+            // becoming an empty typed event — the drop counter exists to surface protocol drift,
+            // and fabricating a default would hide it. ──
+
+            "status.update" -> {
+                // contracts/events.py::StatusUpdatePayload — {kind, text}, both required.
+                val p = params["payload"] as? JsonObject
+                val kind = p?.strField("kind")
+                val text = p?.strField("text")
+                if (kind == null || text == null) unknownFallback(eventType, params, sessionId)
+                else RpcNotification.StatusUpdate(sessionId = sessionId, kind = kind, text = text)
+            }
+
+            "agent.terminal.output" -> {
+                // contracts/events.py::TerminalOutputPayload — {process_id, chunk} required.
+                // `chunk` may legitimately be "" (a flush with no output), so presence is what
+                // is checked, never emptiness.
+                val p = params["payload"] as? JsonObject
+                val pid = p?.strField("process_id")
+                val chunk = p?.strField("chunk")
+                if (pid == null || chunk == null) unknownFallback(eventType, params, sessionId)
+                else RpcNotification.TerminalOutput(
+                    sessionId = sessionId,
+                    processId = pid,
+                    chunk = chunk,
+                )
+            }
+
+            "review.summary" -> {
+                // contracts/events.py::ReviewSummaryPayload — {text} required.
+                val text = (params["payload"] as? JsonObject)?.strField("text")
+                if (text == null) unknownFallback(eventType, params, sessionId)
+                else RpcNotification.ReviewSummary(sessionId = sessionId, text = text)
+            }
+
+            "cron.changed", "platforms.changed" ->
+                // contracts/events.py::ChangeSignalPayload is `{}` with NOTHING required
+                // (extra=allow): the signal is the fact that a watched file moved, so a frame
+                // that omits `payload` entirely is still valid. The gateway emits both with an
+                // empty session_id — they are global broadcasts, like sessions.changed.
+                if (eventType == "cron.changed") RpcNotification.CronChanged(sessionId = sessionId)
+                else RpcNotification.PlatformsChanged(sessionId = sessionId)
+
+            else -> unknownFallback(eventType, params, sessionId)
         }
 
         // ClarifyRequest: pass through to ViewModel for user response
@@ -583,6 +631,41 @@ class JsonRpcClient(
         // be counted against connection Y when joining against the gateway's frame trace.
         notification.frameCid = connection.currentCid()
         notificationFlow.tryEmit(notification)
+    }
+
+    /**
+     * Shared fallback arm: count the dropped name and hand back an Unknown.
+     *
+     * The Phase 0 counter stays — a dropped tool.start or run.failed is a competing
+     * hypothesis for the frozen tool card, so the audit needs the name and the running
+     * count, not a silent drop. Typed arms route here too when a payload is missing a field
+     * the server contract marks required: an empty typed event would look handled and hide
+     * the drift the counter exists to catch.
+     */
+    private fun unknownFallback(
+        eventType: String,
+        params: JsonObject,
+        sessionId: String?,
+    ): RpcNotification.Unknown {
+        val n = unknownCounts.merge(eventType, 1) { a, b -> a + b }
+        DebugLog.log("TRACE", "unknown_event", "name=$eventType count=$n sid=${sessionId?.take(8)}")
+        return RpcNotification.Unknown(
+            eventType = eventType,
+            rawParams = params,
+            sessionId = sessionId,
+        )
+    }
+
+    /**
+     * Read a required string field off a payload object. Null means absent / JSON null / not a
+     * string. Deliberately `as?` rather than the `.jsonObject`/`.jsonPrimitive` accessors used
+     * elsewhere in this file: those THROW on a wrongly-typed value (a `"payload":null` or a
+     * `"payload":"..."` frame would take down the WS reader coroutine), and a required-field
+     * check needs a value that cannot throw.
+     */
+    private fun JsonObject.strField(key: String): String? {
+        val p = this[key] as? JsonPrimitive ?: return null
+        return if (p.isString) p.content else null
     }
 
     // ── v1 convenience methods ──

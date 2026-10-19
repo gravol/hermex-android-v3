@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 
 /**
  * The two things v0.1.896 changed about the keepalive foreground service (audit Phase 6, #19).
@@ -25,12 +26,15 @@ class WsKeepaliveServiceTest {
 
     private fun started() = Robolectric.buildService(WsKeepaliveService::class.java).create()
 
+    /** Robolectric's own record of a `stopSelf()` call on this service instance. */
+    private fun stoppedItself(service: WsKeepaliveService) = shadowOf(service).isStoppedBySelf()
+
     @Test fun systemRedeliveryWithNoIntentStopsItselfInsteadOfClaimingAConnection() {
         val c = started()
         val result = c.get().onStartCommand(null, 0, 7)
         assertEquals("a start nobody asked for must not be sticky",
             Service.START_NOT_STICKY, result)
-        assertTrue(c.stoppedTheService())
+        assertTrue(stoppedItself(c.get()))
     }
 
     @Test fun theStopActionStopsTheServiceAndIsNotStickiedBack() {
@@ -39,7 +43,7 @@ class WsKeepaliveServiceTest {
             .setAction(WsKeepaliveService.ACTION_STOP)
         val result = c.get().onStartCommand(intent, 0, 9)
         assertEquals(Service.START_NOT_STICKY, result)
-        assertTrue(c.stoppedTheService())
+        assertTrue(stoppedItself(c.get()))
     }
 
     @Test fun aRealStartFromTheAppIsStillStickyAndKeepsRunning() {
@@ -49,6 +53,6 @@ class WsKeepaliveServiceTest {
         // The app starts this on a real WebSocket connect; under system pressure it SHOULD come back,
         // because the chat ViewModel will reconnect and the turn may still be running.
         assertEquals(Service.START_STICKY, result)
-        assertFalse(c.stoppedTheService())
+        assertFalse(stoppedItself(c.get()))
     }
 }

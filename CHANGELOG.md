@@ -1,3 +1,106 @@
+## v0.1.896 (vc42) — 2026-10-19 — audit Phases 2, 4, 5, 6, 8: lifecycle, honest notifications, protocol arms, RFB byte math
+
+- **Phase 5 — held chat ViewModels and the microphone.** `ChatScreen` released its `MediaRecorder` only
+  inside `stopRecording()`; navigating away mid-recording left the mic claimed. Now released through a
+  `DisposableEffect` on dispose (`runCatching { rec.stop() }` then `release()`). `ChatVmsHolder` kept
+  every chat ViewModel it had ever created, unbounded; it now holds at most `MAX_HELD_CHATS = 6` in LRU
+  order and `pickToEvict` refuses to evict the current chat or one with a turn still running
+  (`ChatVmsHolderEvictionTest`, 7 tests, including the exactly-at-cap no-evict case).
+  **Correction to the audit's Phase 5 framing:** the "three ChatVMs re-registering the same session"
+  evidence I used for the multi-VM risk (#12/#13) is wrong — those three log lines carry three distinct
+  dbKeys, i.e. three different sessions, which is intended behaviour. No refactor was done against it.
+- **Phase 6 — foreground services and notification honesty.** `WsKeepaliveService` now handles a null
+  intent (a START_STICKY redelivery means no chat ViewModel owns this service) by logging, `stopSelf()`
+  and returning `START_NOT_STICKY` instead of showing a "Connected" notification for a connection nobody
+  asked for. Both foreground services gained an explicit Stop action (`ACTION_STOP`,
+  `STOP_REQUEST_CODE` 8081/8091); stopping ntfy persists `ntfy_enabled=false` so it does not come back
+  on next launch. A reply that timed out posted the same "finished" notification as a completed turn:
+  there is now a separate `postReplyTimedOut` ("no completion came back", Reply still offered) and
+  `postReplyFailed` stays distinct — Sent / TimedOut / Failed are three different claims
+  (`WsKeepaliveServiceTest`, 3 Robolectric tests using `shadowOf(service).isStoppedBySelf()`).
+  **Audit claim corrected:** Phase 6 assumed a WorkManager `onTimeout` recovery path; there is no
+  WorkManager in this app and dataSync foreground services get no `onTimeout` callback. The real recovery
+  path is start-on-connect / start-on-launch, which is what the null-intent guard now makes honest.
+- **Phase 8 — dead code removed:** an unreachable `if (true) {` branch in `ChatScreen`, the unused
+  private composables `LiveThinkingPreviewLine` and `ThinkingToggle`, and the no-op `loadYoloStatus`
+  plus its contract declaration and call site (YOLO state arrives with `session.info`).
+- **Phase 4 — RFB server-message byte math.** Two payload lengths in the read loop were wrong in the
+  direction that never raises: Bell (type 2) has NO payload but the client consumed 7 bytes — six of them
+  belonging to the next message — and SetColourMapEntries' n x 3 channels x U16 payload was never
+  consumed at all. A short read there does not fail; every later rectangle header lands bytes off-centre
+  and the picture goes blank while the socket stays up. Bell is not theoretical here: the client sends no
+  SetPixelFormat and `printf '\a'` on the remote host emits one. ServerCutText (type 3) was unhandled and
+  fell through to "unknown", ending the connection; it is now parsed and ignored with one log line. An
+  unknown type now throws `RFB protocol error: unknown server message type N` instead of logging and
+  returning, because a silent stop is how a blank screen hides. The lengths moved into two pure functions
+  (`headerLength` / `payloadLength`) so they can be tested from RFC 6143 fixtures without a socket —
+  `RfbProtocolLengthTest`, 7 tests: Bell zero, ColourMap 5+6n for n=0/3/255, CutText length parsing,
+  ServerFbUpdate size at offset 13, unknown types raise, plus a deterministic and a 200-case randomized
+  concatenation that must walk to exactly the end of the stream. Writing the fixtures caught an error in
+  my own test first (SetColourMapEntries has ONE padding byte, not three), which is the value of
+  fixtures over prose.
+- **Phase 2 — nine dropped notifications, not five.** The audit listed five names as being dropped;
+  counting the trial journals' own `unknown_event` lines gives nine: `platforms.changed` (1633 lines),
+  `agent.terminal.output` (256), `cron.changed` (81), `status.update` (53), `subagent.tool` (15),
+  `subagent.thinking` (13), `review.summary` (6), `subagent.progress` (2), `session.title` (1). All are
+  real server-side events. Six are now typed with the emission site and payload contract cited in each
+  KDoc, and parsing goes through non-throwing field reads (`as? JsonObject` + `strField`) so a
+  `"payload":null` or string payload falls back to `Unknown` instead of taking down the WS reader
+  coroutine — the pre-existing arms used `?.jsonObject`/`?.jsonPrimitive`, which throw on exactly those
+  frames. A malformed payload deliberately routes to the Phase 0 unknown counter rather than fabricating
+  an empty typed event, because the counter exists to catch protocol drift.
+  - `session.title` is the one that had a real surface, so it is rendered: auto-titling renames a session
+    after the first turn, and until now the phone kept the placeholder title it invented for itself
+    (`sessionId.take(16)`) until reopened. The handler matches on the STORED KEY from the payload
+    (`SessionTitlePayload.session_id` is the stored key, while the frame's own `session_id` is the live
+    sid — the two differ, and the parser test pins that the parser keeps the right one).
+  - The other five (`status.update`, `agent.terminal.output`, `review.summary`, `cron.changed`,
+    `platforms.changed`) are parsed but **not rendered**, and that is stated in code rather than papered
+    over with invented UI: there is no transient-status slot, no process surface anywhere in the app
+    (`process_id` appears in no client model), no notice/inbox surface, the cron list is fetched
+    imperatively inside `CronScreen`'s `remember` with no state holder to invalidate, and platform status
+    has no screen at all. Each instead emits one bounded `TRACE|proto` line with ids and counts only
+    (`kind=`, `textLen=`, `proc=`, `chunkLen=`) — never payload text, because these payloads carry raw
+    background-process output and review text and the debug journal is shareable. A per-name volume gate
+    logs the first occurrence then every 25th while keeping the running count in the line, so a
+    suppressed burst is still counted (`ProtocolTrace` + `ProtoTraceGate`; `platforms.changed` fires on a
+    5 s floor and would otherwise evict DebugLog's ring).
+  - Still open, named rather than guessed: the three `subagent.*` events. The gateway already mirrors
+    child activity into ordinary `tool.*` / `message.*` frames for a live watch window
+    (`tui_gateway/agent_callbacks.py`, `tool_progress._progress_subagent`), so typing them client-side
+    without deciding how a delegate's tool activity should render risks double-rendering, not missing UI.
+  - Tests: `UnknownEventParsingTest` (17 — payloads copied verbatim from the journals or from the
+    emitter where the client's own `take(200)` truncated the log line, malformed/partial/null/wrong-type
+    payloads fall back without throwing, `chunk:""` stays typed, change signals with no `payload` key are
+    still valid) and `ProtocolTraceTest` (9 — ids/counts only, payload text never leaks, gate sequence
+    1/25/50, per-name independence).
+- **Found while installing this build on the phone — a startup ANR, caused by an earlier change of mine.**
+  Three launches in a row died with `Process … failed to complete startup`; the trace names it exactly:
+  `HermexApplication.onCreate → DebugLog.init → reloadFromDisk → readTail`, where `readTail` was
+  `f.readLines()` with the byte budget applied *after* the whole file was read and split — on the main
+  thread, from `Application.onCreate`. That was harmless while the journal rotated at 2 MB; it stopped being
+  harmless when v0.1.894 raised the rotation ceiling for debug/harness builds, because the previous
+  session's file is now routinely tens of megabytes (the Pixel had 64 MB + 6.3 MB on disk at the time).
+  `readTail` now seeks to the tail (`skip(start)`, drop the partial first line, parse at most
+  `MAX_ENTRIES`), so the work is bounded by the budget instead of the file size. Measured on the same
+  device with the same 70 MB journal pair still present: cold start `TotalTime: 2269 ms`, process alive,
+  zero ANRs — versus >15 s and killed, three for three, before the fix.
+  `DebugLogJournalReloadTest` (6 tests) guards it with a **measured** counter, not an asserted one:
+  `lastTailBytesTouched` counts bytes actually transferred through a counting stream, and the test requires
+  it to stay inside the budget. Mutation-checked: making the implementation read from byte 0 again fails
+  exactly the two budget assertions.
+- **Verification of this release.** Full unit suite — `:app`, `:core:network`, `:core:data`
+  `testDebugUnitTest` plus `:app:assembleDebug`: **BUILD SUCCESSFUL in 14m30s, 22 suites / 141 tests /
+  0 failures** (was 21 suites / 135 before this round; +49 tests across six new files listed above). The
+  built APK's manifest was read back before installing (`aapt2 dump badging` → `versionCode=42
+  versionName=0.1.896`) rather than trusting the build output path. On the Pixel 8 (`39151FDJH00HX4`):
+  installs over v0.1.894, cold start `TotalTime: 2269 ms` with the 70 MB journal pair present, process
+  alive, no ANR — that is the startup fix measured against the fixture that caused it.
+- **Not verified on device yet, stated plainly:** the notification arms and `session.title` rendering need a
+  live gateway connection, and the phone's Tailscale has been down since it rebooted at 09:46 — the app's
+  `ENETUNREACH` on `100.80.204.66:9119` is the tailnet being down, not an app fault. Same for Phase 4's
+  on-device half (a Bell during a live bot screen). Those wait for the tailnet link to be back on.
+
 ## v0.1.895 (vc41) — 2026-10-19 — R8 keep rules retargeted at the real package; QA harness checked in
 - **What was wrong (audit finding #21, Phase 7):** every package-scoped rule in `app/proguard-rules.pro` named `com.hermex.android.*` — the frozen v2 package. This app is `com.hermex.v3`, with DTOs in `com.hermex.core.network` and `com.hermex.core.data`. So `-keep class com.hermex.android.HermexApplication`, the Retrofit interface keeps for `.data.remote.**`, the `**$$serializer` / `Companion` / `serializer()` keeps, and the blanket `.data.** .model.** .domain.** .di.** .ui.**` keeps all matched nothing. Release builds are minified (`isMinifyEnabled = true`, `isShrinkResources = true`), so this was live config, not dead text.
 - **Why it appeared to work:** the package-INDEPENDENT rules covered the same ground by accident — `-keep @kotlinx.serialization.Serializable class * { *; }`, `-keep class * extends androidx.lifecycle.ViewModel`, Room's annotation-driven keeps. Correcting the package names without removing any effective rule means this change can only add coverage, never reduce it.
