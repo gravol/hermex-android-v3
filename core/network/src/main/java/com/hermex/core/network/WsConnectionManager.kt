@@ -79,6 +79,17 @@ class WsConnectionManager(
     // starting in the same 2ms and 5 sockets reporting "connected!".
     private val generation = java.util.concurrent.atomic.AtomicInteger(0)
 
+    // v0.1.894 (P5 instrumentation A1): alongside the generation, every socket we open
+    // gets a short CLIENT connection id. The gateway can only see its own transport id;
+    // without a client-side join key, "the gateway routed 424 frames to transport X" and
+    // "the app parsed N frames" cannot be connected in one log. Kept for the last opened
+    // socket on purpose: frames that arrive late still name the connection they came on.
+    @Volatile private var currentCid: String = ""
+    private val cidByGen = java.util.concurrent.ConcurrentHashMap<Int, String>()
+
+    /** The cid of the most recently opened socket ("" before any connect). */
+    fun currentCid(): String = currentCid
+
     /** Phase 0 trace (log-only, no behaviour change): every state transition, stamped
      *  with the generation that caused it. The hypothesis under test is that a CONNECTED
      *  edge never surfaces to the ViewModel's reconnect handler — so every edge, and
@@ -254,6 +265,14 @@ class WsConnectionManager(
         // tell a connect() socket from a forceConnect() socket from a reconnect-attempt
         // socket, which is exactly what the drop trials need to distinguish.
         DebugLog.log("TRACE", "gen_open", "gen=$myGen reason=$reason")
+        // P5 A1: one line per connection, joining our generation to a client connection
+        // id that every later frame line repeats. Logged once, at open time — the point
+        // where the id exists — so a journal always shows the id even if onOpen never
+        // fires (a ticket that dies in the handshake still consumed a connection).
+        val cid = ClientConnId.new()
+        currentCid = cid
+        cidByGen[myGen] = cid
+        DebugLog.log("WS", "conn", "cid=$cid gen=$myGen reason=$reason")
         val stale = webSocket
         webSocket = null
         if (stale != null) {
@@ -274,7 +293,7 @@ class WsConnectionManager(
              *  ignored" branch is the exact path the frozen-card hypothesis blames, so
              *  it has to be visible in the trace, not inferred from absence. */
             private fun ws_cb(name: String, code: Int, current: Boolean) {
-                DebugLog.log("TRACE", "ws_cb", "gen=$myGen $name code=$code isCurrent=$current")
+                DebugLog.log("TRACE", "ws_cb", "gen=$myGen cid=$cid $name code=$code isCurrent=$current")
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {

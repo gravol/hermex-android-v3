@@ -1,3 +1,69 @@
+## v0.1.894 (vc40) — 2026-10-19 — P5 instrumentation + four render/recovery fixes, then a three-model review round of this diff
+
+- **Instrumentation first, because every earlier long-run investigation was blind without it.**
+  - A1 — every socket open mints a short client connection id (`ClientConnId`, 8 hex chars), logs
+    `WS|conn cid=… gen=… reason=…` once, and stamps `cid=` (plus `seq=` and `type=`) on the existing
+    `TRACE|frame` line and on every `ws_cb`. The gateway only ever sees its own transport id, so
+    "frames routed to transport X" and "frames parsed by this app" could not be joined before; that is
+    exactly the open question in the corrected D/14 facts.
+  - A2 — one disposition line per notification per displaying ViewModel:
+    `TRACE|disp cid= sid= seq= type= disp=APPLIED|FILTERED|NO_ROW vm=<identityHash>` (FILTERED carries
+    `nSid=/dbKey=/liveSid=`). This separates "the frames never reached the phone" from "they reached the
+    parser and this ViewModel dropped them", which no existing log line could distinguish. Volume is
+    deliberate (~500 lines/turn); `RpcNotification` gains parser-stamped diagnostic fields
+    (`frameSeq`, `wireType`) that are not constructor values, so parsed-value equality is unchanged.
+  - A3 — `DebugLog` rotation is now an explicit knob: release default stays 2 MB, a debug/harness switch
+    (`setJournalRotationDisabled`) raises it to a 64 MB ceiling so a trial's journal is ONE file the
+    harness can pull whole, and **any** rotation writes a `TRACE|rotate file=… bytes=… threshold=…`
+    marker. The D/14 turn window covered 3 seconds of its own 30 because rotation was silent.
+    Release behaviour is otherwise unchanged (`HermexApplication` calls the switch only under
+    `BuildConfig.DEBUG`).
+  - A4 — every liveSid change (`event=live_sid old= new= reason=`), every sid binding the gateway hands
+    out (`event=sid_bound`), and ViewModel register/unregister (`event=register|unregister dbKey= vm=`)
+    are logged. All liveSid writes go through one `setLiveSid()`.
+- **FIX 1 — Reconcile rule C deleted.** It compared the gateway's persisted `message_count` with the
+  app's rendered row count: different quantities, so it was a permanent false positive (235 of 315 gate
+  evaluations across 37 journals; offsets stable or inverted). It also masked rules A/B/D by
+  short-circuiting behind a useless reload. No count-based replacement; A/B/D unchanged
+  (`ReconcileNoCountRuleTest`, old rule-C test deleted).
+- **FIX 2 — the foreground poll loop no longer dies at its first reconcile.** The `break` after
+  `loadMessages()` ended `while (screenVisible)` permanently: 274 of 315 loops logged exactly one tick.
+  Polling now continues while the screen is visible, with the full-history reload rate-limited to one
+  per 30 s per session and every suppression logged
+  (`PollLoopReconcileTest`: ticks=4, reloads=1, suppressed=1).
+- **FIX 3 — `message.complete` is an id-keyed upsert, never a silent no-op.** A terminal event for a
+  session with no assistant row used to do nothing at all (P2 testbed SECOND_VM@422 → `NO_ROW`). It now
+  matches by server message id, then the live streaming row, then the last assistant row as before, and
+  otherwise creates the row with the delivered text; a terminal event carrying neither text nor tools logs
+  `disp=NO_ROW` instead of inventing an empty row.
+- **FIX 4 — a rotated live sid that belongs to THIS session is adopted, not dropped.** Live sids are
+  per-attach, so any second attach of the same chat rotates the sid and the first ViewModel's copy goes
+  stale — every later frame was filtered (reproduced: 423 of 424 frames parsed and dropped, row blank).
+  Each `session.resume(dbKey)` response records the dbKey→liveSid pair in `SessionSidRegistry`; a frame
+  carrying a mapped-but-unfamiliar sid is now accepted, `liveSid` is rotated, and it is logged
+  (`TRACE|identity liveSid rotated old=… new=…`). Frames for sessions we never bound stay filtered
+  (asserted separately).
+- **Re-run evidence.** The P2 sweep config `SECOND_VM_SID_ROTATION` at all 424 insertion indices: 0 blank
+  rows for either ViewModel, full answer (1290 ch) everywhere, `filteredLines=0`
+  (`artifacts/p2fix/matrix_sid_rotation_after_fix.csv`, `summary_sid_rotation_after_fix.txt`) — previously
+  vmA was blank at idx 0 and held truncated text with `streaming=true` elsewhere. `P2FrameReplayTest`'s
+  positive-control assertion flipped to "no blanks anywhere", which the full sweep now upholds.
+  Mutation-checked per fix: restoring rule C fails only the two count-gap assertions; restoring the loop's
+  `break` fails only the poll-loop test; disabling the terminal upsert fails only the two FIX-3 tests;
+  disabling sid-rotation adoption fails only the FIX-4 test while cross-session filtering still passes.
+
+### Review round on this exact diff (ChatGPT / Grok / Claude, one shared brief: `hermex-qa/longrun/P6_brief.md`, 7 questions, all answered by all three)
+All three returned **SHIP-WITH-CHANGES**. Their required changes are in this release except where explicitly declined below; the panel's own thread URLs are in `hermex-qa/longrun/P6_panel_run.log`.
+- **The terminal upsert can no longer overwrite an earlier turn's answer** — flagged independently by all three. The target-row choice moved out of the ViewModel into `Reconcile.terminalUpsertTarget`: exact server message id → the row actually streaming → a last-assistant fallback ONLY when it belongs to this turn (it comes after the last user message and is either our own `asst_` placeholder or carries the same server id) → otherwise create a new row. A refusal logs why (`TRACE|upsert … REFUSED a fallback row: <reason>`), because "we chose to create a row" has to be distinguishable from "we lost the answer". 7 tests in `ReconcileTerminalUpsertTest`; mutation-checked — disabling the two guard conditions fails exactly those 3 guard tests and nothing else.
+- **The reload cooldown never holds back the blank-row recovery** — all three flagged the 30 s constant as turning a recoverable bug into a visible failure. `Reconcile.ruleFor()` now returns *which* rule fired ("A"/"B"/"D") and `needsReload` is its boolean wrapper; the poll gate rate-limits A/B but exempts D, and `gate_poll` logs `rule=`. Tests: 5 in `ReconcileBlankTurnTest`, including a matrix over 6 message states × 3 `running` values × 2 histories × 2 completion flags × 2 submission flags asserting the boolean and the identity can never disagree.
+- **"Reloaded and still blank" now ends somewhere** (open item from the first review round). Rule D is exempt from the cooldown, so it is bounded instead: at most 3 blank-row reloads per turn, each logged with its attempt number, then `rule=D reload STOPPED — … the answer is not in the server history we can read`. Without this bound a genuinely missing server-side answer would have reloaded every 2–3 s forever.
+- **FIX 5 — rule D also accepts "this screen asked the question"** as turn knowledge. Claude found the hole FIX 1 left: rule C's permanent false positive meant almost every chat-open did an accidental full reload, which sometimes rescued a completely lost turn; with C gone, a turn that starts *and* finishes inside a disconnect gap is invisible to A (the stale-stream watchdog has cleared the placeholder's spinner), B (we never saw `running=true`) and D's old gate (no completion event ever arrived). The app does know one thing nobody else in that sequence knows: that it submitted the prompt. `localTurnSubmitted` is set on prompt/slash submit, counts only while the final row is still blank, and is cleared the moment text lands — so it cannot drive a reload loop. Tests: `blankRowFromOurOwnPromptWithNoServerSignals_reloads` (asserts the old gate was blind) and `ourOwnPromptFlagCannotFireWhenTheAnswerIsThereOrStillComing`.
+- **One live sid, one chat.** `SessionSidRegistry` gained a reverse index (`sid → dbKey`): a claim by a different session takes the sid away from the older key and logs `event=sid_conflict`; `forget(dbKey)` runs on `session.delete`, so a deleted session's sids stop being accepted anywhere. 7 tests in `SessionSidRegistryTest`: rotation history stays accepted, conflict transfers ownership, forget clears both directions, per-session history is bounded at 32, degenerate inputs ignored.
+- **Disposition lines name the chat and carry the frame's own connection id.** `RpcNotification.frameCid` is stamped at parse time in `JsonRpcClient.handleNotification`, so a `disp` line reports the socket the frame actually arrived on rather than whichever connection is current when the ViewModel gets around to handling it — after a reconnect those differ, which would have mis-attributed exactly the client/gateway join this instrumentation exists to make. Lines now also carry `dbKey=`; `JournalLineInstrumentationTest`'s line-contract regex updated to require it.
+- **Declined: the redaction pre-filter optimisation is out of this change** (all three: keep a security-sensitive change separate from behaviour changes; it needs differential-equivalence and canary tests of its own). `DebugLog.redactSecrets` is byte-for-byte the previous implementation again. The rotation knob and the `TRACE|rotate` marker stay — they are measurement infrastructure, not behaviour.
+- **Declined for now, recorded:** replacing rule C's lost coverage with a seq-gap detector (the app now has a per-frame `seq`, so that is the right replacement signal; not built, no evidence yet that it is needed — FIX 5 covers the concrete sequence a reviewer produced); sampling or gating `disp` lines (the journal is debug-only: `HermexApplication` initialises `DebugLog` under `BuildConfig.DEBUG`, so release builds never write them); pruning `cidByGen` in `ClientConnId`.
+- **Verification.** Full unit suites for `:app`, `:core:network` and `:core:data` plus `assembleDebug`: see `GRADLE_EXIT` in the build log for this version; targeted run over every touched surface (Reconcile ×3 files, `SessionSidRegistryTest`, `BlankRowFixesReplayTest`, `JournalLineInstrumentationTest`, `PollLoopReconcileTest`) was green at 52 tests before FIX 5 and re-run after it. Device evidence for v0.1.894 is the P5 pass described in `HermexAndroid/poll-loop-dead-ruleC-falsepositive-2026-10-19.md`; nothing in this section is device-verified yet.
+
 ## v0.1.893 (vc39) — 2026-10-19
 - **A finished turn could render nothing.** Found while measuring mid-turn socket drops on the Pixel 8
   (trial D/14, note `HermexAndroid/drop-trial-harness-v0.1.892-2026-10-18.md`): the prompt was
@@ -26,8 +92,39 @@
   - Rule D covers only the foreground-poll gate. The reconnect gate (`DashboardChatViewModel.kt:1339`)
     still requires something streaming or an open tool card, so a blank non-streaming row is not
     reconciled there — recovery waits for the next poll instead of happening on rebind.
+  - **Delivery to the phone was never proven, and an earlier claim about it was wrong (corrected
+    2026-10-19).** This entry originally said the frame trace proved the answer had been delivered to the
+    phone and only the local state failed. The gateway trace proves frames were *routed* to a
+    `session_transport` — for D/14 that transport is the phone's socket (`transport=715e85ef3350`, which
+    detached with `reason=ws_disconnect` at 1792372096, exactly our kill moment) — but the app-side journal
+    for that window is too incomplete to show whether any of those frames reached the parser: in the two
+    surviving capture files, the 30-second turn window contains journal lines for only three seconds
+    (…076, …096, …098). The supporting count I used before ("424 gateway frames vs 445 inbound client frame
+    lines") is invalid: those client lines carry `sid=955c00b6` — a different session — not the probe chat's.
+    So D/14 sits between two live hypotheses: the reducer lost applied frames (reproducible in JVM, see
+    `longrun/P2_replay_results.md`), or the frames never reached the app because they went to a different
+    live connection. On the second: an earlier note here said the gateway rebound the session "mid-turn" —
+    that was wrong. Re-checked against the trace, `message.complete` was routed at 1792372091.47, our kill
+    landed at 1792372096, and the rebind at 1792372098 is the ordinary reconnect (D/44 shows the same
+    shape). What the trace does show is that `turn_start reason=prompt_submit` arrived on transport
+    `715e285fbed0` while the session had been attached 63 µs earlier to `715e85ef3350` — two live
+    connections for the same phone at prompt time. Settling it needs per-frame send confirmation on the
+    gateway plus an un-rotated client journal, both keyed by a client-chosen connection id.
   - Whether the server's own final message had content in D/14 was never captured; if it was blank too,
     no client-side reload can surface an answer. No test covers "reloaded and still blank".
+  - **Reachability, measured after shipping (2026-10-19, note
+    `HermexAndroid/poll-loop-dead-ruleC-falsepositive-2026-10-19.md`):** `Reconcile.needsReload` is called
+    from one place — the foreground poll loop — and that loop does not survive its first tick. Across 37
+    captured journals there were 315 `gate_poll` evaluations, 239 of them requesting a reload, **235
+    attributable to rule C alone** (`serverMessageCount > messages.size`), and every reload ends with
+    `loadMessages(); break` (`DashboardChatViewModel.kt:2337`), which exits the `while (screenVisible)`
+    loop permanently: **274 loops logged exactly one tick**, 19 reached a second. Rule C compares the
+    gateway's persisted transcript counter (`sessions.message_count`) against the app's rendered row count —
+    different quantities, offsets stable (`count=46 local=38`, `count=100 local=90`) and sometimes inverted
+    (`count=230 local=375`) — so it fires on essentially every evaluation, reloads, and kills the loop.
+    Practical consequence: rule D is only evaluated when a chat is opened, so a blank row that appears while
+    the chat is already open is never re-checked, and the device tallies below show that the common recovery
+    path works — they are **not** evidence that rule D did anything.
 - **Verification.** Unit: `ReconcileBlankTurnTest` (6 cases, incl. a blank row while the server is
   still running, which must NOT reload) — 25 tests green. Mutation-checked: disabling rule D fails
   exactly the two D/14 assertions and nothing else. Device, scenario D (socket kill at submit +20 s):

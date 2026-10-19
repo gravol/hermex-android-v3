@@ -143,6 +143,10 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             try {
                 val rpc = ensureShared() ?: throw Exception("connection unavailable")
                 rpc.sessionDelete(sessionId)
+                // A deleted session's live sids must stop being accepted by any chat
+                // screen: without this the chat ViewModel's SessionSidRegistry keeps
+                // mappings that outlive the session they describe.
+                com.hermex.v3.feature.chat.SessionSidRegistry.forget(sessionId)
                 DebugLog.log("INFO", "SessionsVM", "session.delete → $sessionId")
                 _uiState.value = _uiState.value.copy(deleting = false)
                 loadSessions()

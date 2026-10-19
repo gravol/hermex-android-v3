@@ -18,9 +18,15 @@ package com.hermex.v3.feature.chat
  *     rows, so nothing is marked streaming and no tool card is unfinished. The
  *     v0.1.886 gate (`isStreaming` only) never fires in this case; verified on
  *     device. Only the running-flag transition catches it.
- *  C. the server has more rows than the local list — the tail of the turn is
- *     missing. The message count is the robust signal: it does not depend on
- *     catching the turn while `running` is true.
+ *  C. REMOVED in v0.1.894 (FIX 1). It compared `sessions.message_count` (the
+ *     gateway's PERSISTED transcript counter) with `messages.size` (this app's
+ *     rendered row count for one chat screen). Those are different quantities with
+ *     different zero points, so the rule was a permanent false positive: across 37
+ *     captured journals it fired on 235 of 315 gate evaluations, with stable offsets
+ *     (`count=46 local=38`, `count=100 local=90`) and sometimes inverted readings
+ *     (`count=230 local=375`). Worse than useless: it short-circuited A/B/D behind a
+ *     reload that could not help, and (with the loop's old `break`) killed the poll
+ *     loop at its first tick. No count-based replacement — the signal is not there.
  * D. the local list has the RIGHT number of rows, but the final assistant row is
  *     blank. Measured in trial D/14 (v0.1.892): the gateway routed `message.start`,
  *     258 deltas and `message.complete` to the phone's live transport before the
@@ -41,12 +47,50 @@ object Reconcile {
         }
 
     /**
+     * Which rule fired — "A", "B" or "D" — or null when the local copy is current.
+     *
+     * The caller needs the *identity*, not just a boolean. Panel review of this change
+     * (three independent reviewers, all asking the same thing): a cooldown on full
+     * history reloads is fine for the stuck-UI rules, but must never suppress the
+     * blank-row recovery, because that is the one case where the user is staring at a
+     * prompt with no answer and "wait 30 s" is a visible failure.
+     *
      * @param messages the local UI list
      * @param serverRunning the `running` field from `session.resume` (null = unknown)
-     * @param serverMessageCount the `message_count` field from `session.resume`
+     * @param serverMessageCount accepted for call-site symmetry and gate logging only.
+     *   NO rule reads it since FIX 1 — see the class doc for why it is not a signal.
      * @param serverTurnWasRunning we saw `running == true` on an earlier poll, i.e.
      *   the app attached while a turn was in flight
+     * @param localTurnSubmitted THIS ViewModel submitted the prompt that is unanswered.
+     *   Reviewer-found gap: a turn can start and finish inside a disconnect gap, so the
+     *   app never saw `running=true` and never got a completion event; the stale-stream
+     *   watchdog then clears the placeholder's spinner, which blinds rule A as well. The
+     *   app still knows it asked the question — that is turn knowledge, and the strongest
+     *   kind there is.
      */
+    @JvmOverloads
+    fun ruleFor(
+        messages: List<UiMessage>,
+        serverRunning: Boolean?,
+        serverMessageCount: Int?,
+        serverTurnWasRunning: Boolean,
+        turnDoneSeen: Boolean = false,
+        localTurnSubmitted: Boolean = false,
+    ): String? {
+        if (serverRunning == false && localInFlight(messages)) return "A"
+        if (serverTurnWasRunning && serverRunning == false) return "B"
+        // FIX 1: rule C (serverMessageCount > messages.size) deleted — it compared a
+        // persisted gateway counter with a rendered-row count and fired on almost every
+        // evaluation. Deliberately NOT replaced by another count heuristic.
+        // D. blank final assistant row after a turn we know ran (see the class doc).
+        // Requires the turn knowledge so an old blank row from an aborted turn cannot
+        // start reloading every poll.
+        if (serverRunning == false && (serverTurnWasRunning || turnDoneSeen || localTurnSubmitted) &&
+            blankFinalAssistantRow(messages)) return "D"
+        return null
+    }
+
+    /** The poll gate only needs yes/no; [ruleFor] carries the identity. */
     @JvmOverloads
     fun needsReload(
         messages: List<UiMessage>,
@@ -54,16 +98,52 @@ object Reconcile {
         serverMessageCount: Int?,
         serverTurnWasRunning: Boolean,
         turnDoneSeen: Boolean = false,
-    ): Boolean {
-        if (serverRunning == false && localInFlight(messages)) return true
-        if (serverTurnWasRunning && serverRunning == false) return true
-        if (serverMessageCount != null && serverMessageCount > messages.size) return true
-        // D. blank final assistant row after a turn we know ran (see the class doc).
-        // Requires the turn knowledge so an old blank row from an aborted turn cannot
-        // start reloading every poll.
-        if (serverRunning == false && (serverTurnWasRunning || turnDoneSeen) &&
-            blankFinalAssistantRow(messages)) return true
-        return false
+        localTurnSubmitted: Boolean = false,
+    ): Boolean = ruleFor(
+        messages, serverRunning, serverMessageCount, serverTurnWasRunning, turnDoneSeen,
+        localTurnSubmitted,
+    ) != null
+
+    /**
+     * Which row a terminal `message.complete` should update, and why a candidate was
+     * refused. Extracted from the ViewModel for the same reason as the reconcile rules:
+     * this decision destroyed a user's answer once (the silent no-op) and can destroy a
+     * different one if it guesses wrong, so it needs tests without a phone.
+     *
+     * Order: exact server message id → the row actually streaming right now → the last
+     * assistant row, but only when that row belongs to THIS turn (it comes after the last
+     * user message) and is not carrying a different server id. Anything else returns -1,
+     * meaning "create a new row" — creating a row is always better than overwriting an
+     * earlier turn's finished answer with this turn's text.
+     *
+     * @return index to update (-1 = create), plus a journal-ready refusal reason or null.
+     */
+    fun terminalUpsertTarget(
+        messages: List<UiMessage>,
+        serverMsgId: String?,
+    ): Pair<Int, String?> {
+        val id = serverMsgId?.takeIf { it.isNotBlank() }
+        if (id != null) {
+            val exact = messages.indexOfFirst { m -> m.id == id }
+            // An exact id match is decisive; a NON-match is not — the frame may be one we
+            // have never seen (late attach), and the streaming / same-turn rules below are
+            // then the right thing to consult. Returning -1 here would skip them.
+            if (exact >= 0) return exact to null
+        }
+        val streaming = messages.indexOfLast { it.role == "assistant" && it.isStreaming }
+        if (streaming >= 0) return streaming to null
+        val lastUserIdx = messages.indexOfLast { it.role == "user" }
+        val cand = messages.indexOfLast { it.role == "assistant" }
+        if (cand < 0) return -1 to null
+        val candId = messages[cand].id
+        if (cand <= lastUserIdx) {
+            return -1 to "candidate index=$cand precedes the last user message at index=" +
+                "$lastUserIdx, so it belongs to an earlier turn"
+        }
+        if (!candId.startsWith("asst_")) {
+            return -1 to "candidate id=$candId is a finished server row, not a placeholder for this turn"
+        }
+        return cand to null
     }
 
     /** The last assistant row carries no text and is not still streaming. Tool cards on

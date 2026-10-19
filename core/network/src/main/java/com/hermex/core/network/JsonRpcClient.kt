@@ -285,7 +285,16 @@ class JsonRpcClient(
                 val sid = p["session_id"]?.jsonPrimitive?.content
                 if (sid != null) "sid=${sid.take(8)}" else "sid=-"
             } ?: "sid=-"
-            DebugLog.log("TRACE", "frame", "method=$method id=${rawId?.take(8)} $sessHash")
+            // P5 A1/A2 join keys: `seq` + `type` are the same values the gateway frame
+            // trace records, and `cid` names THIS client's socket. With all three on one
+            // line, "gateway routed N frames to transport X" can be reconciled against
+            // "client cid Y parsed these frames" — which is exactly what the D/14
+            // investigation could not settle from either side alone.
+            val frameSeq = params?.get("seq")?.jsonPrimitive?.content?.toLongOrNull() ?: -1L
+            val frameType = params?.get("type")?.jsonPrimitive?.content ?: "-"
+            val connId = connection.currentCid().ifBlank { "-" }
+            DebugLog.log("TRACE", "frame",
+                "method=$method id=${rawId?.take(8)} $sessHash seq=$frameSeq type=$frameType cid=$connId")
 
             // Phase 1: record the gateway's per-session monotonic seq as a replay
             // watermark. `tui_gateway/event_replay.py` stamps `seq` on every event
@@ -294,7 +303,7 @@ class JsonRpcClient(
             // never used this — the reconcile gate was guessing from message counts.
             if (params != null) {
                 val sid = params["session_id"]?.jsonPrimitive?.content
-                val seq = params["seq"]?.jsonPrimitive?.content?.toLongOrNull()
+                val seq = if (frameSeq >= 0L) frameSeq else null
                 if (sid != null && seq != null) {
                     val prev = lastSeenSeq[sid] ?: 0L
                     if (seq > prev) lastSeenSeq[sid] = seq
@@ -564,6 +573,15 @@ class JsonRpcClient(
             DebugLog.log("RPC", "Clarify", "forwarding to ViewModel: requestId=${notification.requestId}")
         }
 
+        // P5 A2: stamp the frame's own identity onto the parsed event so a consumer can
+        // report WHICH frame it applied or dropped. These are diagnostic fields on the
+        // base class, not constructor values — parsed-value equality is unchanged.
+        notification.frameSeq = params["seq"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+        notification.wireType = eventType
+        // The socket this frame arrived on, stamped here rather than looked up in the
+        // consumer: a frame parsed off connection X and handled after a reconnect must not
+        // be counted against connection Y when joining against the gateway's frame trace.
+        notification.frameCid = connection.currentCid()
         notificationFlow.tryEmit(notification)
     }
 

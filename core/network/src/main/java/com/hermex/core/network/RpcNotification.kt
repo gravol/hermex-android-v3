@@ -15,6 +15,29 @@ sealed class RpcNotification {
     /** Extracted from params.session_id on every event. */
     abstract val sessionId: String?
 
+    /**
+     * P5 A2 diagnostics, stamped by `JsonRpcClient.handleNotification` from the frame
+     * this event was parsed out of: the gateway's per-session monotonic `seq` (0 when
+     * the frame carried none) and the wire event name (`params.type`). They exist so a
+     * consumer can log one disposition line per frame (`TRACE|disp cid= sid= seq=
+     * type= disp=…`) instead of the reader inferring it from absence.
+     *
+     * Deliberately NOT constructor parameters: data-class equals/hashCode/copy over the
+     * parsed values is unchanged, and no call site has to thread them through.
+     */
+    var frameSeq: Long = 0L
+    var wireType: String = ""
+
+    /**
+     * P5 A2: the id of the socket this frame was parsed off. Stamped at parse time, next
+     * to `frameSeq`, so a consumer's disposition line reports the connection the frame
+     * actually arrived on rather than whichever connection happens to be current when the
+     * consumer gets around to running — after a reconnect those differ, and the whole
+     * point of these lines is to join client-side counts against the gateway's per-transport
+     * frame trace.
+     */
+    var frameCid: String = ""
+
     // ── Connection lifecycle ──
 
     data class GatewayReady(

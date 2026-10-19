@@ -13,7 +13,16 @@ class HermexApplication : Application() {
         // v0.1.82: journal FIRST — lines logged after this survive crashes and
         // force-kills; the previous session's tail is reloaded into the buffer.
         DebugLog.init(this)
-        DebugLog.log("INFO", "HermexApp", "app process start (v${BuildConfig.VERSION_NAME})")
+        // P5 A3: in debug builds the journal does not rotate below a 64 MB ceiling, so a
+        // trial's log is ONE file the harness can pull whole. Every long-run investigation
+        // so far lost most of its own window to the 2 MB rotation (the D/14 turn covered
+        // 3 seconds of its own 30). Release behaviour is untouched, and both modes emit an
+        // explicit TRACE|rotate line whenever a rotation does happen.
+        if (BuildConfig.DEBUG) {
+            DebugLog.setJournalRotationDisabled(true)
+        }
+        DebugLog.log("INFO", "HermexApp", "app process start (v${BuildConfig.VERSION_NAME}) " +
+            "journalRotationBytes=${DebugLog.journalRotationBytes()}")
 
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->

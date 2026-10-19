@@ -66,6 +66,43 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     private val tempIdCounter = AtomicInteger(0)
     private var resumeCount: Int = 0            // how many times session.resume was called
 
+    /** P5 A4: stable per-instance id on every identity/disposition journal line. More
+     *  than one chat ViewModel can be registered for the same session at once; without
+     *  this the journal cannot say WHICH one applied or dropped a frame — which is
+     *  precisely the question the D/14 blank-row mechanism turns on. */
+    private val vmId: Int = System.identityHashCode(this)
+
+    /** FIX 2: the foreground poll loop no longer ends at its first reconcile, so the
+     *  full-history reload it triggers is rate limited instead (at most one per this
+     *  interval per session). The suppressed case is logged, never silent. */
+    private var lastReconcileReloadAtMs: Long = 0L
+    private val reconcileReloadMinIntervalMs: Long = 30_000L
+
+    /**
+     * FIX 5 — does THIS ViewModel have an unanswered prompt of its own making?
+     *
+     * A panel reviewer found the hole that FIX 1 left: rule C used to fire on almost every
+     * first tick, which meant an accidental full reload happened often enough to rescue a
+     * turn that had been lost completely. With C gone, a turn that starts AND finishes
+     * inside a disconnect gap is invisible to A (the stale-stream watchdog clears the
+     * placeholder's spinner), B (we never saw running=true) and D's old gate (no completion
+     * event ever arrived). The app may still know one thing nobody else in that sequence
+     * does: that it submitted the prompt. That is turn knowledge, so rule D accepts it.
+     *
+     * Set when a prompt or slash command is sent from this screen; cleared as soon as the
+     * final row is no longer blank, so a stale flag can never drive a reload loop.
+     */
+    private var localTurnSubmitted = false
+
+    /**
+     * "Reloaded and still blank" — the case earlier reviews said we had no handling for.
+     * Rule D is exempt from the reload cooldown (a blank answer is what the user is
+     * looking at), so without a cap a genuinely missing server-side answer would reload
+     * forever. Three attempts, then it stops and says so in the journal.
+     */
+    private var blankRowReloadsForCurrentTurn = 0
+    private val maxBlankRowReloadsPerTurn = 3
+
     // v0.1.137 — tracks whether the current turn has been told it is done
     // server-side (any completion event seen). Lets us clear `isStreaming`
     // IMMEDIATELY instead of waiting for the stale-stream watchdog, so a
@@ -169,7 +206,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         }
         val oldSid = this.sessionId.takeIf { it.isNotEmpty() } ?: "(none)"
         this.sessionId = sessionId           // KEEP as stable DB session key — NEVER overwrite with live sid
-        this.liveSid = ""                    // reset until session.resume returns
+        setLiveSid("", "session_key_switch")   // reset until session.resume returns (liveSid is DEBUG ONLY)
         this.resumedSessionId = ""           // reset until session.resume returns
         this.resumeCount = 0
         // Fresh session VM — clear any leftover completion flag from a previous
@@ -277,7 +314,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     "result.session_key=$newSessionKey " +
                     "result.message_count=${result.message_count}")
 
-                liveSid = newLiveSid           // DEBUG ONLY — see Phase 4L.1 rule
+                setLiveSid(newLiveSid, "loadMessages_resume#$resumeCount")  // DEBUG ONLY — see Phase 4L.1 rule
                 resumedSessionId = newResumed   // for logging/reference
 
                 DebugLog.log("STATE", "SessionID",
@@ -407,7 +444,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     val recovered = resumeUntilLive(3, selfHealBaseDelayMs, selfHealMaxDelayMs)
                     if (recovered != null) {
                         resumeCount++
-                        liveSid = recovered.session_id
+                        setLiveSid(recovered.session_id, "loadMessages_4007_selfheal")
                         resumedSessionId = recovered.resumed ?: sessionId
                         DebugLog.log("RPC", "DashboardChat",
                             "loadMessages 4007 recovered — reloading with fresh result: $sessionId")
@@ -439,7 +476,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     }.getOrNull()
                     if (recovered != null) {
                         resumeCount++
-                        liveSid = recovered.session_id
+                        setLiveSid(recovered.session_id, "loadMessages_4001_selfheal")
                         resumedSessionId = recovered.resumed ?: sessionId
                         DebugLog.log("RPC", "DashboardChat",
                             "loadMessages 4001 recovered — reloading with fresh result: $sessionId")
@@ -502,7 +539,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         }
         if (result != null) {
             resumeCount++
-            liveSid = result.session_id
+            setLiveSid(result.session_id, "selfheal_resume_$op")
             resumedSessionId = result.resumed ?: sessionId
             DebugLog.log("STATE", "SessionID",
                 "$op self-heal resume(#$resumeCount): dbKey=$sessionId liveSid=$liveSid — retrying attach")
@@ -520,7 +557,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 DebugLog.log("STATE", "SessionID",
                     "$op self-heal created fresh session: old=$sessionId new=$newKey — retrying attach")
                 sessionId = newKey
-                liveSid = ""
+                setLiveSid("", "session_created_new_db_key")
                 resumedSessionId = ""
                 resumeCount = 0
                 true
@@ -568,7 +605,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             }
             if (result != null) {
                 resumeCount++
-                liveSid = result.session_id                    // debug only — never write into sessionId
+                setLiveSid(result.session_id, "submit_selfheal_resume")  // debug only — never write into sessionId
                 resumedSessionId = result.resumed ?: sessionId
                 DebugLog.log("STATE", "SessionID",
                     "self-heal resume(#$resumeCount): dbKey=$sessionId liveSid=$liveSid — retrying submit")
@@ -683,6 +720,10 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         // A fresh turn starts here — clear any leftover completion flag from a
         // previous turn so the new placeholder isn't immediately finalized.
         this.turnDoneSeen = false
+        // FIX 5: this screen asked the question, so rule D has turn knowledge even if no
+        // running=true and no completion event ever reaches us (turn lost inside a gap).
+        this.localTurnSubmitted = true
+        this.blankRowReloadsForCurrentTurn = 0
         // v0.1.140: a new turn — allow the next completion to ping again.
         this.turnNotifPosted = false
 
@@ -742,6 +783,9 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         // minutes with no stream events — the user needs to see it working.
         // A slash command is a fresh turn; clear any leftover completion flag.
         this.turnDoneSeen = false
+        // FIX 5: same as the prompt path — this screen asked, so rule D knows a turn ran.
+        this.localTurnSubmitted = true
+        this.blankRowReloadsForCurrentTurn = 0
         // v0.1.140: a new turn — allow the next completion to ping again.
         this.turnNotifPosted = false
         val asstMsg = UiMessage(
@@ -830,7 +874,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     DebugLog.log("STATE", "SessionID",
                         "slash.exec 4001 — self-heal resume + retry (dbKey=$sessionId)")
                     val resume = rpcClient.sessionResume(sessionId, omitMessages = true)
-                    liveSid = resume.session_id
+                    setLiveSid(resume.session_id, "slash_exec_4001_resume")
                     resumedSessionId = resume.resumed ?: sessionId
                     rpcClient.slashExec(liveSid.ifBlank { sessionId }, command)
                 }
@@ -1189,6 +1233,9 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
      * running session 20s after a disconnect.
      */
     fun dispose() {
+        DebugLog.log("TRACE", "identity",
+            "event=unregister dbKey=$sessionId liveSid=${liveSid.ifBlank { "-" }} vm=$vmId " +
+            "wasCollecting=${notificationCollectorJob?.isActive == true}")
         notificationCollectorJob?.cancel()
         serverRequestCollectorJob?.cancel()
         staleStreamTimeoutJob?.cancel()
@@ -1252,6 +1299,43 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         }
     }
 
+    // ── Session identity (P5 A4) ──
+
+    /**
+     * Single write point for [liveSid], so every change is observable in the journal
+     * with old/new values and every live sid the gateway hands out for [sessionId] is
+     * recorded in [SessionSidRegistry]. That registry is what lets a frame carrying a
+     * rotated-but-mine sid be accepted instead of silently dropped (FIX 4).
+     */
+    private fun setLiveSid(newSid: String?, reason: String) {
+        val next = newSid ?: ""
+        if (next == liveSid) return
+        DebugLog.log("TRACE", "identity",
+            "event=live_sid dbKey=$sessionId vm=$vmId old=${liveSid.ifBlank { "-" }} " +
+            "new=${next.ifBlank { "-" }} reason=$reason")
+        liveSid = next
+        if (next.isNotEmpty()) SessionSidRegistry.note(sessionId, next, reason)
+    }
+
+    /**
+     * P5 A2: one disposition line per notification for the session this ViewModel is
+     * displaying. The D/14 investigation could not tell "the frames never reached the
+     * phone" from "they reached the parser and this ViewModel dropped them"; with one
+     * line per frame per VM, that distinction is read directly off the journal instead
+     * of inferred from absence. Volume is deliberate (~500 lines/turn).
+     */
+    private fun dispLine(n: RpcNotification, disp: String, extra: String = "") {
+        // cid comes from the frame itself (stamped at parse time), not from whatever
+        // connection is current now: after a reconnect those differ, and these lines are
+        // the client half of the join against the gateway's per-transport frame trace.
+        DebugLog.log("TRACE", "disp",
+            "cid=${n.frameCid.ifBlank { wsConnection.currentCid().ifBlank { "-" } }} " +
+            "dbKey=${sessionId.take(24)} " +
+            "sid=${n.sessionId?.take(8) ?: "-"} " +
+            "seq=${n.frameSeq} type=${n.wireType.ifBlank { n::class.simpleName ?: "?" }} " +
+            "disp=$disp vm=$vmId" + if (extra.isNotEmpty()) " $extra" else "")
+    }
+
     // ── WebSocket lifecycle ──
 
     private fun connectWsAndStart() {
@@ -1300,7 +1384,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                     if (!turnDoneSeen) turnDoneSeen = false
                                     val result = rpcClient.sessionResume(sessionId, omitMessages = true)
                                     resumeCount++
-                                    liveSid = result.session_id
+                                    setLiveSid(result.session_id, "reconnect_resume")
                                     resumedSessionId = result.resumed ?: sessionId
                                     DebugLog.log("STATE", "SessionID",
                                         "reconnect resume(#${resumeCount}): " +
@@ -1428,6 +1512,12 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     "RPC client started, total=${System.currentTimeMillis() - connectStartTime}ms " +
                     "(sessionId=$sessionId)")
 
+                // P5 A4: this ViewModel is now registered for its session's events on
+                // this connection — say so with the ids that make the journal joinable.
+                DebugLog.log("TRACE", "identity",
+                    "event=register dbKey=$sessionId liveSid=${liveSid.ifBlank { "-" }} " +
+                    "cid=${wsConnection.currentCid().ifBlank { "-" }} vm=$vmId resumeCount=$resumeCount")
+
                 // Begin collecting notifications
                 notificationCollectorJob = launch {
                     rpcClient.notifications.collect { notification ->
@@ -1547,12 +1637,39 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         // Filter: only process events for our session
         val nSid = n.sessionId
         if (nSid != null && nSid.isNotEmpty() && nSid != sessionId && nSid != liveSid) {
-            // Notifications may carry either DB key or live SID — match against both
-            DebugLog.log("STATE", "SessionID",
-                "notification FILTERED: nSid=$nSid != dbKey=$sessionId != liveSid=$liveSid " +
+            // Notifications may carry either DB key or live SID — match against both.
+            //
+            // v0.1.894 FIX 4 — a THIRD case exists and used to be dropped silently: the
+            // sid is neither, but the gateway has already told us (via some other
+            // session.resume of this same dbKey) that it belongs to THIS session. Live
+            // sids are per-attach, so any second attach of the same chat — another chat
+            // ViewModel, a reconnect resume, another device — rotates the sid while this
+            // ViewModel's copy goes stale, and every following frame was filtered away.
+            // Measured in the P2 replay testbed (config SECOND_VM_SID_ROTATION): 423 of
+            // 424 frames parsed, seq-watermarked and logged, none applied; the assistant
+            // row kept whatever it had at cut over — in D/14's shape, nothing.
+            // So: adopt the rotation (and say so), do not lose the turn.
+            if (!SessionSidRegistry.isKnownFor(sessionId, nSid)) {
+                DebugLog.log("STATE", "SessionID",
+                    "notification FILTERED: nSid=$nSid != dbKey=$sessionId != liveSid=$liveSid " +
+                    "event=${n::class.simpleName}")
+                dispLine(n, "FILTERED",
+                    "nSid=$nSid dbKey=$sessionId liveSid=$liveSid event=${n::class.simpleName} " +
+                    "knownSids=${SessionSidRegistry.sidsOf(sessionId).size}")
+                return
+            }
+            DebugLog.log("TRACE", "identity",
+                "liveSid rotated old=$liveSid new=$nSid dbKey=$sessionId vm=$vmId " +
+                "reason=frame_carries_sid_already_bound_to_this_session " +
                 "event=${n::class.simpleName}")
-            return
+            setLiveSid(nSid, "frame_sid_rotation")
         }
+
+        // P5 A2: one disposition line per accepted notification. Terminal events log their
+        // own outcome below (they are the ones that can be a silent no-op); deltas and
+        // everything else are applied by definition once they pass the session filter.
+        val terminalEvent = n is RpcNotification.MessageCompleted || n is RpcNotification.RunCompleted
+        if (!terminalEvent) dispLine(n, "APPLIED")
         // v0.1.82: per-delta MATCHED lines are GONE — ~30 lines/sec of streaming
         // evicted the 1000-entry ring in ~30s, so an export after a long run
         // contained only the crawl's tail. Deltas are counted; flushDeltas logs
@@ -1782,7 +1899,47 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 // land on a fresh placeholder instead of stranding the UI.
                 this.turnDoneSeen = true
                 clearInFlight(sessionId)
-                val idx = msgs.indexOfLast { it.role == "assistant" }
+                // v0.1.894 FIX 3 — an id-keyed UPSERT, never a silent no-op. The old
+                // code did `indexOfLast { role == "assistant" }` and did nothing at all
+                // when no such row existed: a client that attached late (or whose history
+                // was re-read mid-turn) received `message.complete` with the full answer
+                // in hand and rendered nothing — measured in the P2 testbed as
+                // SECOND_VM@422 ending with NO_ROW. The target-row choice is now the
+                // tested Reconcile.terminalUpsertTarget (exact id, then streaming row, then
+                // a same-turn fallback, else create).
+                val serverMsgId = n.messageId?.takeIf { it.isNotBlank() }
+                // The selection rule lives in Reconcile.terminalUpsertTarget so it can be
+                // unit-tested without a phone (ReconcileTerminalUpsertTest): exact server id,
+                // then the row that is actually streaming, then a last-assistant fallback ONLY
+                // if it belongs to this turn. A finished answer from an earlier turn must never
+                // be overwritten — that would trade the blank-row bug for a lost answer.
+                val (upIdx, refuseReason) = Reconcile.terminalUpsertTarget(msgs, serverMsgId)
+                var idx = upIdx
+                if (refuseReason != null) {
+                    DebugLog.log("TRACE", "upsert",
+                        "message.complete REFUSED a fallback row: $refuseReason " +
+                        "wantedId=${serverMsgId ?: "-"} sid=${n.sessionId?.take(8)} " +
+                        "seq=${n.frameSeq} vm=$vmId — creating a new row instead of " +
+                        "overwriting an earlier turn")
+                }
+                val deliversAnything = !n.content.isNullOrBlank() || !n.toolCalls.isNullOrEmpty()
+                if (idx < 0 && deliversAnything) {
+                    msgs.add(
+                        UiMessage(
+                            id = serverMsgId ?: "asst_${tempIdCounter.incrementAndGet()}",
+                            role = "assistant",
+                            timestamp = System.currentTimeMillis(),
+                        )
+                    )
+                    idx = msgs.size - 1
+                    DebugLog.log("TRACE", "upsert",
+                        "message.complete for a session with NO assistant row — created " +
+                        "row id=${msgs[idx].id} sid=${n.sessionId?.take(8)} seq=${n.frameSeq} " +
+                        "contentLen=${n.content?.length ?: 0} vm=$vmId")
+                } else if (idx < 0) {
+                    dispLine(n, "NO_ROW",
+                        "reason=terminal_event_carried_no_content_and_no_local_row_exists")
+                }
                 if (idx >= 0) {
                     val cur = msgs[idx]
                     val finalContent = n.content?.takeIf { it.isNotBlank() } ?: cur.content
@@ -1828,6 +1985,13 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                         )
                     }
                 }
+                // A2: the terminal event's own disposition (NO_ROW was already logged
+                // above when nothing could be applied).
+                if (idx >= 0) {
+                    dispLine(n, "APPLIED",
+                        "rowId=${msgs[idx].id} contentLen=${msgs[idx].content.length} " +
+                        "createdByUpsert=${deliversAnything && msgs[idx].id == (serverMsgId ?: "")}")
+                }
                 uiState = uiState.copy(
                     messages = msgs,
                     isStreaming = false,
@@ -1862,6 +2026,10 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     }
                 }
                 onTurnFinished()
+                // run.completed carries no text of its own: it can finalize a row, never
+                // create one. Say which of the two happened (A2 vocabulary).
+                dispLine(n, if (uiState.messages.any { it.role == "assistant" }) "APPLIED" else "NO_ROW",
+                    "reason=run_completed_no_text")
                 uiState = uiState.copy(isStreaming = false)
                 return
             }
@@ -2317,25 +2485,83 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                             DebugLog.log("STATE", "SessionID",
                                 "foreground poll: server running=true — watching for completion")
                         }
-                        val needsReload = Reconcile.needsReload(uiState.messages, result.running,
-                            result.message_count, serverTurnWasRunning, turnDoneSeen)
+                        // FIX 5: `localTurnSubmitted` only counts while the final row is
+                        // still blank — the moment text lands it is cleared, so a flag from
+                        // a finished turn can never drive later reloads.
+                        val blankNow = Reconcile.blankFinalAssistantRow(uiState.messages)
+                        if (!blankNow) localTurnSubmitted = false
+                        val reconcileRule = Reconcile.ruleFor(uiState.messages, result.running,
+                            result.message_count, serverTurnWasRunning, turnDoneSeen,
+                            localTurnSubmitted && blankNow)
+                        val needsReload = reconcileRule != null
                         // v0.1.893 — gate_poll now names every rule input, including the
                         // two that trial D/14 showed were invisible: turnDoneSeen and
                         // whether the final assistant row is blank. Without those the log
                         // read "nothing to do" for a state that had lost the answer.
                         DebugLog.log("TRACE", "gate_poll",
-                            "id=$loopId needsReload=$needsReload running=${result.running} " +
+                            "id=$loopId needsReload=$needsReload rule=${reconcileRule ?: "-"} " +
+                            "running=${result.running} " +
                             "count=${result.message_count} local=${uiState.messages.size} " +
                             "serverTurnWasRunning=$serverTurnWasRunning localInFlight=${localInFlight()} " +
-                            "turnDoneSeen=$turnDoneSeen blankFinalRow=${Reconcile.blankFinalAssistantRow(uiState.messages)}")
+                            "turnDoneSeen=$turnDoneSeen localTurnSubmitted=$localTurnSubmitted " +
+                            "blankRowReloads=$blankRowReloadsForCurrentTurn " +
+                            "blankFinalRow=$blankNow")
                         if (needsReload) {
-                            serverTurnWasRunning = false
-                            DebugLog.log("STATE", "SessionID",
-                                "foreground poll: reconcile — server running=${result.running} " +
-                                "count=${result.message_count} local=${uiState.messages.size} " +
-                                "— full reload")
-                            loadMessages()
-                            break
+                            // v0.1.894 FIX 2 — the `break` that used to sit here ended the
+                            // whole `while (screenVisible)` loop. Measured across 37 journals:
+                            // 274 of 315 gate evaluations were a loop's FIRST and LAST tick,
+                            // 19 reached a second. So after any reconcile the gauge froze, the
+                            // model chip went stale, and rules A/B/D stopped being evaluated
+                            // for as long as the chat stayed open — a lost turn could only be
+                            // recovered by closing and reopening the chat.
+                            // Keeping the loop alive needs a bound on the expensive part
+                            // instead: at most one full-history reload per session per
+                            // [reconcileReloadMinIntervalMs]. Suppression is logged, never
+                            // silent, and the lightweight resume below still runs every tick.
+                            val nowMs = System.currentTimeMillis()
+                            val sinceLastMs = if (lastReconcileReloadAtMs == 0L) Long.MAX_VALUE
+                                else nowMs - lastReconcileReloadAtMs
+                            // "Reloaded and still blank" has to end somewhere. Rule D is
+                            // exempt from the cooldown because a blank final row is what the
+                            // user is looking at, so the bound here is on attempts per turn:
+                            // after that many full re-reads the answer is not in the history
+                            // we can read, and reloading again would run forever.
+                            val blankCapped = reconcileRule == "D" &&
+                                blankRowReloadsForCurrentTurn >= maxBlankRowReloadsPerTurn
+                            if (blankCapped) {
+                                DebugLog.log("TRACE", "gate_poll",
+                                    "id=$loopId rule=D reload STOPPED — $blankRowReloadsForCurrentTurn " +
+                                    "blank-row reloads already done for this turn and the final row is " +
+                                    "still blank; the answer is not in the server history we can read " +
+                                    "(local=${uiState.messages.size} count=${result.message_count})")
+                            } else if (sinceLastMs < reconcileReloadMinIntervalMs && reconcileRule != "D") {
+                                // Rule D is never rate limited. A blank final row is the one
+                                // state where the user is actively looking at a prompt with no
+                                // answer; holding it for the cooldown turns a recoverable bug
+                                // into a visible 30 s failure. The cooldown exists to stop a
+                                // level-triggered A/B reload from hammering history reads, not
+                                // to gate the recovery the user can see.
+                                DebugLog.log("TRACE", "gate_poll",
+                                    "id=$loopId rule=${reconcileRule ?: "-"} reload SUPPRESSED — last " +
+                                    "full reload was ${sinceLastMs}ms ago " +
+                                    "(< ${reconcileReloadMinIntervalMs}ms), needsReload still true; " +
+                                    "polling continues")
+                            } else {
+                                if (reconcileRule == "D") {
+                                    blankRowReloadsForCurrentTurn++
+                                    DebugLog.log("TRACE", "gate_poll",
+                                        "id=$loopId rule=D blank-row reload attempt " +
+                                        "$blankRowReloadsForCurrentTurn/$maxBlankRowReloadsPerTurn")
+                                }
+                                lastReconcileReloadAtMs = nowMs
+                                serverTurnWasRunning = false
+                                DebugLog.log("STATE", "SessionID",
+                                    "foreground poll: reconcile — server running=${result.running} " +
+                                    "count=${result.message_count} local=${uiState.messages.size} " +
+                                    "— full reload (loop continues; next reload allowed after " +
+                                    "${reconcileReloadMinIntervalMs}ms)")
+                                loadMessages()
+                            }
                         }
                         val ctx = parseContextUsage(result.info)
                         if (ctx.first != null || ctx.second != null) {

@@ -56,12 +56,10 @@ class ReconcileTest {
             serverMessageCount = 2, serverTurnWasRunning = true))
     }
 
-    // C. server has more rows than the local list — tail of the turn missing.
-    @Test fun serverHasMoreRows_reloads() {
-        val msgs = listOf(user(), assistant(streaming = false, toolCompleted = true))
-        assertTrue(Reconcile.needsReload(msgs, serverRunning = true,
-            serverMessageCount = 26, serverTurnWasRunning = false))
-    }
+    // Rule C (server row count > local row count) was removed in v0.1.894: it compared
+    // the gateway's persisted transcript counter with this app's rendered row count, and
+    // fired on 235 of 315 production gate evaluations. Its replacement is the explicit
+    // rule set in ReconcileNoCountRuleTest — a count gap alone reloads nothing.
 
     // No-op cases: must not reload a chat that is already caught up.
     @Test fun caughtUpDoesNotReload() {

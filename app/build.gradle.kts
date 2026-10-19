@@ -13,12 +13,19 @@ android {
         applicationId = "com.hermex.v3"
         minSdk = 34
         targetSdk = 34
-        versionCode = 39
-        versionName = "0.1.893"
+        versionCode = 40
+        versionName = "0.1.894"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    // P2 frame-replay testbed (test-only config; no production behaviour change)
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
         }
     }
 
@@ -158,6 +165,9 @@ dependencies {
 
     // Testing
     testImplementation("junit:junit:4.13.2")
+    // P2 frame-replay testbed: drive real DashboardChatViewModel reducer on the JVM
+    testImplementation("org.robolectric:robolectric:4.14")
+    testImplementation("androidx.test:core:1.6.1")
 
     // Project modules
     implementation(project(":core:network"))

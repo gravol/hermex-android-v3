@@ -1,6 +1,8 @@
 package com.hermex.v3.feature.chat
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -84,5 +86,99 @@ class ReconcileBlankTurnTest {
         val msgs = listOf(user(), assistant(content = "   \n "))
         assertTrue(Reconcile.needsReload(msgs, serverRunning = false,
             serverMessageCount = msgs.size, serverTurnWasRunning = false, turnDoneSeen = true))
+    }
+
+    // ── v0.1.894, from the panel review of the reload cooldown ─────────────────────
+    // The poll gate now rate limits full history reloads (one per 30 s per session) so a
+    // level-triggered rule cannot hammer the gateway. All three reviewers flagged the same
+    // hazard: a cooldown must never hold back the blank-row recovery, because that is the
+    // state where the user is staring at a prompt with no answer. So the caller needs to
+    // know WHICH rule fired, not just yes/no.
+
+    @Test fun ruleForNamesTheBlankRowRuleSoTheCallerCanNeverDelayIt() {
+        val msgs = listOf(user(), assistant(content = ""))
+        assertEquals("D", Reconcile.ruleFor(msgs, serverRunning = false,
+            serverMessageCount = msgs.size, serverTurnWasRunning = false, turnDoneSeen = true))
+    }
+
+    @Test fun ruleForNamesTheStuckUiRuleWhenAToolCardIsStillOpen() {
+        val msgs = listOf(user(), assistant(content = "PONG", toolCompleted = false))
+        assertEquals("A", Reconcile.ruleFor(msgs, serverRunning = false,
+            serverMessageCount = msgs.size, serverTurnWasRunning = false, turnDoneSeen = true))
+    }
+
+    @Test fun ruleForNamesTheMidTurnAttachRule() {
+        val msgs = listOf(user(), assistant(content = "PONG"))
+        assertEquals("B", Reconcile.ruleFor(msgs, serverRunning = false,
+            serverMessageCount = msgs.size, serverTurnWasRunning = true))
+    }
+
+    @Test fun ruleForIsNullWhenTheLocalCopyIsCurrent() {
+        val msgs = listOf(user(), assistant(content = "PONG"))
+        assertNull(Reconcile.ruleFor(msgs, serverRunning = false,
+            serverMessageCount = msgs.size, serverTurnWasRunning = false, turnDoneSeen = true))
+        assertNull(Reconcile.ruleFor(msgs, serverRunning = null,
+            serverMessageCount = null, serverTurnWasRunning = false))
+    }
+
+    /** FIX 5 — the sequence a panel reviewer found, with no server-side evidence at all. */
+    @Test fun blankRowFromOurOwnPromptWithNoServerSignals_reloads() {
+        val msgs = listOf(user(), assistant(content = ""))
+        // Without knowing we asked, every rule is blind: nothing streams (the watchdog
+        // cleared the placeholder), we never saw running=true, no completion arrived.
+        assertNull(Reconcile.ruleFor(msgs, serverRunning = false,
+            serverMessageCount = msgs.size, serverTurnWasRunning = false))
+        // Knowing this screen submitted the prompt is turn knowledge — rule D fires.
+        assertEquals("D", Reconcile.ruleFor(msgs, serverRunning = false,
+            serverMessageCount = msgs.size, serverTurnWasRunning = false,
+            localTurnSubmitted = true))
+        assertTrue(Reconcile.needsReload(msgs, serverRunning = false,
+            serverMessageCount = msgs.size, serverTurnWasRunning = false,
+            localTurnSubmitted = true))
+    }
+
+    /** The flag must not turn into a permanent reload generator: with content present,
+     *  or while the server is still running, nothing fires. */
+    @Test fun ourOwnPromptFlagCannotFireWhenTheAnswerIsThereOrStillComing() {
+        val good = listOf(user(), assistant(content = "PONG"))
+        assertNull(Reconcile.ruleFor(good, serverRunning = false,
+            serverMessageCount = good.size, serverTurnWasRunning = false,
+            localTurnSubmitted = true))
+        val streaming = listOf(user(), assistant(content = "", streaming = true))
+        assertNull(Reconcile.ruleFor(streaming, serverRunning = true,
+            serverMessageCount = streaming.size, serverTurnWasRunning = true,
+            localTurnSubmitted = true))
+    }
+
+    /** The boolean wrapper must never disagree with the identity it delegates to. */
+    @Test fun needsReloadAndRuleForAgreeAcrossTheWholeMatrix() {
+        val states = listOf(
+            listOf(user(), assistant(content = "")),
+            listOf(user(), assistant(content = "   ")),
+            listOf(user(), assistant(content = "PONG")),
+            listOf(user(), assistant(content = "PONG", toolCompleted = false)),
+            listOf(user(), assistant(content = "", streaming = true)),
+            listOf(user()),
+        )
+        for (msgs in states) {
+            for (running in listOf(true, false, null)) {
+                for (wasRunning in listOf(true, false)) {
+                    for (done in listOf(true, false)) {
+                        for (local in listOf(true, false)) {
+                            val rule = Reconcile.ruleFor(msgs, running, msgs.size, wasRunning,
+                                done, local)
+                            val bool = Reconcile.needsReload(msgs, running, msgs.size, wasRunning,
+                                done, local)
+                            assertEquals(
+                                "rule=$rule bool=$bool running=$running wasRunning=$wasRunning " +
+                                    "done=$done local=$local " +
+                                    "rows=${msgs.map { it.role + ":" + it.content }}",
+                                rule != null, bool,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -28,7 +28,10 @@ import java.util.concurrent.atomic.AtomicLong
 object DebugLog {
 
     private const val MAX_ENTRIES = 4000
-    private const val MAX_FILE_BYTES = 2_000_000L      // journal rotation size
+    private const val MAX_FILE_BYTES = 2_000_000L      // journal rotation size (release default)
+    /** A3: what "do not rotate" means in practice — a ceiling high enough that no QA
+     *  trial reaches it, but finite so the disk is never unbounded. */
+    private const val NO_ROTATION_CEILING_BYTES = 64_000_000L
     private const val FLUSH_INTERVAL_MS = 2_000L
     private const val KEEP_LOG_FILES = 2               // hermex.log + hermex.log.1
     private const val KEEP_EXPORTS = 10
@@ -131,6 +134,34 @@ object DebugLog {
     @Volatile private var journalBytes = 0L
 
     /**
+     * Effective rotation threshold, seeded with the release default. Lowercase knob
+     * because it is a debug/harness switch, not a product setting:
+     *  - [setJournalRotationDisabled] raises it (a long-running trial's journal stays in
+     *    ONE file, so a pulled log has no silent hole in the middle — the D/14
+     *    investigation lost 27 of 30 seconds of its own turn window to rotation);
+     *  - 0 means never rotate.
+     * Release builds never call either, so their behaviour is the 2 MB default.
+     */
+    @Volatile private var rotationBytes = MAX_FILE_BYTES
+
+    /** Current rotation threshold in bytes (0 = never rotate). */
+    fun journalRotationBytes(): Long = rotationBytes
+
+    /** Set the rotation threshold directly (0 = never rotate). Diagnostic/harness use. */
+    fun setJournalRotationBytes(bytes: Long) {
+        val v = if (bytes < 0L) 0L else bytes
+        if (v == rotationBytes) return
+        rotationBytes = v
+        log("INFO", "DebugLog", "journal rotation threshold ${MAX_FILE_BYTES}B -> $v" +
+            if (v == 0L) " (rotation disabled)" else "")
+    }
+
+    /** A3 debug/harness switch: stop rotating the journal (raise the cap to a ceiling
+     *  high enough that a trial does not hit it). Never called from release paths. */
+    fun setJournalRotationDisabled(disabled: Boolean) =
+        setJournalRotationBytes(if (disabled) NO_ROTATION_CEILING_BYTES else MAX_FILE_BYTES)
+
+    /**
      * Wire the disk journal and reload the previous session's tail. Call once
      * from Application.onCreate before any log lines matter. Idempotent.
      */
@@ -171,12 +202,22 @@ object DebugLog {
         }
         try {
             val main = File(d, "hermex.log")
-            if (journalBytes + text.length > MAX_FILE_BYTES) {
+            val limit = rotationBytes
+            if (limit > 0L && journalBytes + text.length > limit) {
                 // Rotation: hermex.log -> hermex.log.1 (oldest .1 dropped).
                 val rot = File(d, "hermex.log.1")
                 if (rot.exists()) rot.delete()
+                val movedBytes = if (main.exists()) main.length() else 0L
                 if (main.exists()) main.renameTo(rot)
                 journalBytes = 0L
+                // A3: a journal that rotated must say so. Every earlier long-run
+                // investigation treated a pulled log as continuous and was wrong — the
+                // D/14 turn window covered 3 seconds of its own 30 because the rest had
+                // silently rotated away. This line makes the gap self-describing.
+                log("TRACE", "rotate",
+                    "journal rotated file=hermex.log -> file=hermex.log.1 " +
+                    "bytes=$movedBytes threshold=${limit}B " +
+                    "— entries before this line exist only in .1")
             }
             main.appendText(text)
             journalBytes += text.length
