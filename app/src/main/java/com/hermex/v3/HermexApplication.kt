@@ -60,7 +60,7 @@ class HermexApplication : Application() {
             if (savedDashboardUrl != null && savedDashboardPassword != null) {
                 DashboardApiClient.setDashboardUrl(savedDashboardUrl)
                 DashboardApiClient.setPassword(savedDashboardPassword)
-                DashboardApiClient.setUsername(savedDashboardUsername ?: "jeff")
+                DashboardApiClient.setUsername(savedDashboardUsername ?: "")
                 Log.d("Hermex", "HermexApplication: restored dashboard URL + password")
                 DebugLog.log("INFO", "HermexApp", "restored dashboard credentials → isConfigured=true")
             } else {

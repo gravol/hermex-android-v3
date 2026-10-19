@@ -111,9 +111,13 @@ fun SettingsScreen(
             val storageEncrypted = remember { KeychainStore.isStorageEncrypted() }
             Text(
                 if (storageEncrypted) {
-                    "Server address, username and password for your Hermes gateway. Saved credentials are encrypted on this device."
+                    "Your own Hermes gateway: its address plus the username and password you use in that " +
+                        "gateway's web UI. Hermex has no account system of its own and shares nothing with " +
+                        "any other install. Saved credentials stay encrypted on this device."
                 } else {
-                    "Server address, username and password for your Hermes gateway. ⚠ Secure storage is unavailable on this device — credentials are kept in memory only and are not saved, so you will need to sign in again after each launch."
+                    "Your own Hermes gateway: its address plus the username and password you use in that " +
+                        "gateway's web UI. ⚠ Secure storage is unavailable on this device — credentials are " +
+                        "kept in memory only and are not saved, so you will need to sign in again after each launch."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (storageEncrypted) MaterialTheme.colorScheme.onSurfaceVariant
@@ -124,7 +128,9 @@ fun SettingsScreen(
             val keychainUser = remember { KeychainStore.getDashboardUsername(context) }
             val keychainPass = remember { KeychainStore.getDashboardPassword(context) }
             var serverUrl by remember { mutableStateOf(keychainUrl ?: DashboardApiClient.baseUrl()) }
-            var username by remember { mutableStateOf(keychainUser ?: "jeff") }
+            // No default username: the previous one was the developer's own login, which silently signed
+            // every other installer in as an account that does not exist on their gateway.
+            var username by remember { mutableStateOf(keychainUser ?: "") }
             var password by remember { mutableStateOf(keychainPass ?: "") }
             var saving by remember { mutableStateOf(false) }
             var connError by remember { mutableStateOf<String?>(null) }
@@ -132,8 +138,11 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = serverUrl,
                 onValueChange = { serverUrl = it; connError = null },
-                label = { Text("Server address") },
-                placeholder = { Text("http://100.80.204.66:9119") },
+                label = { Text("Gateway address") },
+                placeholder = { Text("http://192.168.1.20:9119") },
+                supportingText = {
+                    Text("Your gateway's web port (9119 by default). Tailscale/VPN addresses and https:// domains work too.")
+                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
@@ -142,6 +151,8 @@ fun SettingsScreen(
                 value = username,
                 onValueChange = { username = it; connError = null },
                 label = { Text("Username") },
+                placeholder = { Text("your gateway username") },
+                supportingText = { Text("The login you use in that gateway's web UI — not a Hermex account.") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -167,7 +178,11 @@ fun SettingsScreen(
                                 return@launch
                             }
                             if (!url.startsWith("http")) url = "http://$url"
-                            val user = username.ifBlank { "jeff" }
+                            val user = username.trim()
+                            if (user.isBlank()) {
+                                connError = "Username is required — it is the account on your own gateway"
+                                return@launch
+                            }
                             when (val statusResult = DashboardApiClient.status(url)) {
                                 is NetworkResult.Success -> {
                                     DashboardApiClient.setDashboardUrl(url)
@@ -512,19 +527,42 @@ fun SettingsScreen(
 
             // v0.1.87: native ntfy push delivery (docs/NATIVE_NTFY_DELIVERY_PLAN.md)
             Text("Push Delivery", style = MaterialTheme.typography.titleSmall)
+            // v0.1.897: the compiled-in server/topics below are the DEVELOPER's own fleet. The old copy
+            // ("Keep the defaults for the Hermes fleet") read like an instruction to everyone else too,
+            // and left them subscribed to a host they cannot reach.
             Text(
-                "Hermex listens on your self-hosted ntfy server and posts cron/infra/background-session notices as Hermex notifications. Keep the defaults for the Hermes fleet.",
+                "Hermex subscribes to an ntfy server over WebSocket and shows those messages as phone " +
+                    "notifications. This is optional and separate from the chat connection above: you need " +
+                    "an ntfy server of your own (self-hosted, or https://ntfy.sh) plus something on your " +
+                    "Hermes side publishing to the same topic. If you do not run one, leave this switched " +
+                    "off — chat and turn-finished notifications still work.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             val savedNtfy by settingsRepo.ntfyEnabled.collectAsState(initial = true)
             val savedNtfyServer by settingsRepo.ntfyServer.collectAsState(initial = "")
             val savedNtfyTopics by settingsRepo.ntfyTopics.collectAsState(initial = "")
+            // Fields show ONLY what the user saved. Pre-filling them with the compiled-in defaults made
+            // the developer's server look like the user's own setting; the warning above states what is
+            // actually in effect when nothing is saved.
             var ntfyServerText by remember(savedNtfyServer) {
-                mutableStateOf(savedNtfyServer.ifBlank { com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_SERVER })
+                mutableStateOf(savedNtfyServer)
             }
             var ntfyTopicsText by remember(savedNtfyTopics) {
-                mutableStateOf(savedNtfyTopics.ifBlank { com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_TOPICS_CSV })
+                mutableStateOf(savedNtfyTopics)
+            }
+            // Nothing saved yet → the app is actually using the developer's built-in values. Say so in
+            // the numbers rather than leaving it to fail silently as a never-connecting subscription.
+            if (savedNtfyServer.isBlank() || savedNtfyTopics.isBlank()) {
+                Text(
+                    "⚠ Nothing saved here yet, so Hermex is using its built-in defaults — " +
+                        "${com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_SERVER} · topics " +
+                        "${com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_TOPICS_CSV}. Those belong " +
+                        "to the developer's own server and will deliver nothing for you. Type your own " +
+                        "server and topic below, or switch Native notifications off.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -555,8 +593,11 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = ntfyServerText,
                 onValueChange = { ntfyServerText = it },
-                label = { Text("ntfy server") },
-                placeholder = { Text(com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_SERVER) },
+                label = { Text("ntfy server (your own)") },
+                placeholder = { Text("https://ntfy.sh  or  http://192.168.1.20:8080") },
+                supportingText = {
+                    Text("Your ntfy server, not a shared one. Access tokens and password-protected topics are not supported yet — use an unguessable topic name instead.")
+                },
                 singleLine = true,
                 enabled = savedNtfy,
                 modifier = Modifier.fillMaxWidth(),
@@ -565,7 +606,10 @@ fun SettingsScreen(
                 value = ntfyTopicsText,
                 onValueChange = { ntfyTopicsText = it },
                 label = { Text("Topics (comma-separated)") },
-                placeholder = { Text(com.hermex.v3.notify.NtfySubscriptionService.DEFAULT_TOPICS_CSV) },
+                placeholder = { Text("hermes-yourname, hermes-yourname-cron") },
+                supportingText = {
+                    Text("Your Hermes side has to publish to these same names (ntfy delivery in the gateway/cron config). Anyone who knows a topic name can read it, so keep them private.")
+                },
                 singleLine = true,
                 enabled = savedNtfy,
                 modifier = Modifier.fillMaxWidth(),

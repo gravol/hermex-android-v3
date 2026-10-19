@@ -41,16 +41,49 @@ fun DashboardSetupScreen(
                 style = MaterialTheme.typography.headlineSmall,
             )
 
+            Spacer(Modifier.height(8.dp))
+
+            // v0.1.897: Hermex ships no server of its own and used to pre-fill the developer's own
+            // gateway + sign everyone in as his user. Say plainly whose values these are.
+            Text(
+                text = "Hermex has no server of its own — it talks directly to a Hermes gateway you " +
+                    "run. Everything below is YOUR server and YOUR login; nothing here is shared " +
+                    "with anyone else.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
             Spacer(Modifier.height(24.dp))
 
             // Dashboard URL
             OutlinedTextField(
                 value = state.dashboardUrl,
                 onValueChange = viewModel::updateDashboardUrl,
-                label = { Text("Dashboard URL") },
+                label = { Text("Gateway address") },
+                placeholder = { Text("http://192.168.1.20:9119") },
+                supportingText = {
+                    Text(
+                        "The address of your Hermes gateway on your network — the web port, 9119 by " +
+                            "default. A Tailscale/VPN address or an https:// domain works too.",
+                    )
+                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                enabled = !state.isLoading,
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            // Username — the account on THEIR gateway, not a Hermex account.
+            OutlinedTextField(
+                value = state.username,
+                onValueChange = viewModel::updateUsername,
+                label = { Text("Username") },
+                placeholder = { Text("your gateway username") },
+                supportingText = { Text("The login you use in that gateway's web UI.") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
                 enabled = !state.isLoading,
             )
 
@@ -62,6 +95,9 @@ fun DashboardSetupScreen(
                 value = state.dashboardPassword,
                 onValueChange = viewModel::updateDashboardPassword,
                 label = { Text("Password") },
+                supportingText = {
+                    Text("The password for that gateway account. It never leaves your phone except to sign in.")
+                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 visualTransformation = if (passwordVisible)
@@ -89,6 +125,7 @@ fun DashboardSetupScreen(
                 onClick = viewModel::testConnection,
                 modifier = Modifier.fillMaxWidth(),
                 enabled = state.dashboardUrl.isNotBlank()
+                        && state.username.isNotBlank()
                         && state.dashboardPassword.isNotBlank()
                         && !state.isLoading,
             ) {

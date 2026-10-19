@@ -37,7 +37,7 @@ object DashboardApiClient {
     private var restUrl: String = ""            // e.g. "http://100.80.204.66:9119"
     private var wsUrl: String = ""              // e.g. "ws://100.80.204.66:9119"  (derived)
     private var dashboardPassword: String = ""
-    private var dashboardUsername: String = "jeff"
+    private var dashboardUsername: String = ""
     private lateinit var httpClient: OkHttpClient
 
     val isConfigured: Boolean get() = restUrl.isNotEmpty() && dashboardPassword.isNotEmpty()
@@ -77,7 +77,10 @@ object DashboardApiClient {
     }
 
     fun setUsername(username: String) {
-        dashboardUsername = username.ifBlank { "jeff" }
+        // Stored verbatim. It used to fall back to the developer's own login, which meant a fresh
+        // install sent an account that does not exist on the user's gateway and the failure looked
+        // like a wrong password. An empty username now fails loudly at login, as it should.
+        dashboardUsername = username
     }
 
     /** Expose the HTTP client for ticket-fetch + WS creation. */

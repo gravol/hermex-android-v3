@@ -50,7 +50,8 @@ object KeychainStore {
 
     fun saveDashboardCredentials(
         context: Context, dashboardUrl: String, dashboardPassword: String,
-        dashboardUsername: String = "jeff",
+        // No developer default: an installer's username is their own account on their own gateway.
+        dashboardUsername: String = "",
     ) {
         getPrefs(context).edit()
             .putString(KEY_DASHBOARD_URL, dashboardUrl)

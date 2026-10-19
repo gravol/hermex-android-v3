@@ -14,7 +14,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 data class DashboardSetupUiState(
-    val dashboardUrl: String = "http://100.80.204.66:9119",
+    // Deliberately empty: this is not a Hermex-hosted service, so there is no "right" address to
+    // pre-fill for someone who did not build this app. The old default was the developer's own
+    // Tailscale gateway, which reads as a real option and silently fails for everyone else.
+    val dashboardUrl: String = "",
+    val username: String = "",
     val dashboardPassword: String = "",
     val isLoading: Boolean = false,
     val connectionOk: Boolean = false,
@@ -31,6 +35,10 @@ class DashboardSetupViewModel(application: Application) : AndroidViewModel(appli
         _uiState.value = _uiState.value.copy(dashboardUrl = url, error = null)
     }
 
+    fun updateUsername(username: String) {
+        _uiState.value = _uiState.value.copy(username = username, error = null)
+    }
+
     fun updateDashboardPassword(password: String) {
         _uiState.value = _uiState.value.copy(dashboardPassword = password, error = null)
     }
@@ -38,10 +46,15 @@ class DashboardSetupViewModel(application: Application) : AndroidViewModel(appli
     fun testConnection() {
         val state = _uiState.value
         val url = state.dashboardUrl.trim()
+        val username = state.username.trim()
         val password = state.dashboardPassword
 
         if (url.isBlank()) {
-            _uiState.value = state.copy(error = "Dashboard URL is required")
+            _uiState.value = state.copy(error = "Enter the address of YOUR Hermes gateway")
+            return
+        }
+        if (username.isBlank()) {
+            _uiState.value = state.copy(error = "Enter the username you use on that gateway")
             return
         }
         if (password.isBlank()) {
@@ -62,16 +75,18 @@ class DashboardSetupViewModel(application: Application) : AndroidViewModel(appli
                         DebugLog.log("INFO", "DashboardSetup", "status OK — v${s.version}")
                         Log.d("Hermex", "DashboardSetupViewModel: status OK v${s.version}")
 
-                        // Step 2: authenticate
+                        // Step 2: authenticate. The username is whatever the user typed — there is no
+                        // default account; hard-coding the developer's own login here signed every other
+                        // installer in as someone who does not exist on their gateway.
                         DashboardApiClient.setDashboardUrl(url)
                         DashboardApiClient.setPassword(password)
-                        DashboardApiClient.setUsername("jeff")
+                        DashboardApiClient.setUsername(username)
 
-                        when (val loginResult = DashboardApiClient.login("jeff", password)) {
+                        when (val loginResult = DashboardApiClient.login(username, password)) {
                             is NetworkResult.Success -> {
                                 DebugLog.log("INFO", "DashboardSetup", "login OK")
                                 KeychainStore.saveDashboardCredentials(
-                                    getApplication(), url, password, "jeff"
+                                    getApplication(), url, password, username
                                 )
                                 _uiState.value = _uiState.value.copy(
                                     isLoading = false,
