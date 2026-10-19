@@ -2318,11 +2318,16 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                                 "foreground poll: server running=true — watching for completion")
                         }
                         val needsReload = Reconcile.needsReload(uiState.messages, result.running,
-                            result.message_count, serverTurnWasRunning)
+                            result.message_count, serverTurnWasRunning, turnDoneSeen)
+                        // v0.1.893 — gate_poll now names every rule input, including the
+                        // two that trial D/14 showed were invisible: turnDoneSeen and
+                        // whether the final assistant row is blank. Without those the log
+                        // read "nothing to do" for a state that had lost the answer.
                         DebugLog.log("TRACE", "gate_poll",
                             "id=$loopId needsReload=$needsReload running=${result.running} " +
                             "count=${result.message_count} local=${uiState.messages.size} " +
-                            "serverTurnWasRunning=$serverTurnWasRunning localInFlight=${localInFlight()}")
+                            "serverTurnWasRunning=$serverTurnWasRunning localInFlight=${localInFlight()} " +
+                            "turnDoneSeen=$turnDoneSeen blankFinalRow=${Reconcile.blankFinalAssistantRow(uiState.messages)}")
                         if (needsReload) {
                             serverTurnWasRunning = false
                             DebugLog.log("STATE", "SessionID",

@@ -1,3 +1,35 @@
+## v0.1.893 (vc39) — 2026-10-19
+- **A finished turn could render nothing.** Found while measuring mid-turn socket drops on the Pixel 8
+  (trial D/14, note `HermexAndroid/drop-trial-harness-v0.1.892-2026-10-18.md`): the prompt was
+  accepted, the gateway routed the whole answer — `message.start`, 258 `message.delta`, and
+  `message.complete` — into the phone's live transport (`route=session_transport`) about five seconds
+  *before* the socket was killed, and the app ended up holding an assistant row with no text in it.
+  The user saw their own message and no reply; the tool card sat incomplete until the watchdog
+  force-closed it.
+  - The first hypothesis — that the actively-rendered session had no replay coverage — was
+    **disproved by the frame trace**: delivery had already happened. The failure is local state.
+  - Why nothing recovered it: at the next resume the reconcile gate logged
+    `running=false localInFlight=false turnDoneSeen=true reconcile=false`. Nothing was streaming, no
+    tool card was open, and the server's `message_count` EQUALLED the local row count — because the
+    blank row counts as a row. All three existing rules (streaming/open card, running-flag
+    transition, count gap) are blind to that state.
+  - **Fix:** `Reconcile.needsReload` gains rule D — if the server says the turn is over and we know a
+    turn ran in this chat, a blank final assistant row means our copy is wrong, so re-read the
+    history. The turn-knowledge condition (`serverTurnWasRunning || turnDoneSeen`) is what stops an
+    old blank row from an aborted turn reloading on every poll.
+  - `gate_poll` now logs `turnDoneSeen=` and `blankFinalRow=`. Without those two inputs the D/14 log
+    read as "nothing to do", which is why the failure looked unexplained for a day.
+- **Verification.** Unit: `ReconcileBlankTurnTest` (6 cases, incl. a blank row while the server is
+  still running, which must NOT reload) — 25 tests green. Mutation-checked: disabling rule D fails
+  exactly the two D/14 assertions and nothing else. Device, scenario D (socket kill at submit +20 s):
+  N=10 in a single-Chat-ViewModel configuration recovered 10/10, and a matched N=5 run
+  (trials D/41-D/45, three live Chat ViewModels verified from each journal's three
+  `reconnect detected - re-registering session` lines — the same configuration the 9/10 baseline was
+  measured in) recovered 5/5. No spurious full-reload fired in any trial and no duplicated message
+  appeared in any screenshot. Honest limit: the lost-message race needs the turn to finish inside the
+  ~2.5 s dead window, so it appeared once in ten baseline trials and has not been reproduced since;
+  rule D is pinned by unit tests against that exact state, not by a fresh device observation of it.
+
 ## v0.1.892 (vc38) — 2026-10-18
 - **Login stopped persisting after the Phase 3 cleanup — found on the Pixel 8 within minutes of
   shipping v0.1.891.** `SecureStore.open` deleted `shared_prefs/<name>.xml` on the *success* path

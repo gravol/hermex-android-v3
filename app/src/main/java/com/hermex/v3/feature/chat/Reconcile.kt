@@ -21,6 +21,14 @@ package com.hermex.v3.feature.chat
  *  C. the server has more rows than the local list — the tail of the turn is
  *     missing. The message count is the robust signal: it does not depend on
  *     catching the turn while `running` is true.
+ * D. the local list has the RIGHT number of rows, but the final assistant row is
+ *     blank. Measured in trial D/14 (v0.1.892): the gateway routed `message.start`,
+ *     258 deltas and `message.complete` to the phone's live transport before the
+ *     socket was killed, and the app kept an empty assistant row. Nothing streams,
+ *     no card is open, and the count matches — because the blank row counts as a
+ *     row — so A, B and C are all blind and the user sees their prompt with no
+ *     answer. A turn the server says is finished always ends with text, so a blank
+ *     final row means our copy is wrong: re-read the history.
  */
 object Reconcile {
 
@@ -39,16 +47,32 @@ object Reconcile {
      * @param serverTurnWasRunning we saw `running == true` on an earlier poll, i.e.
      *   the app attached while a turn was in flight
      */
+    @JvmOverloads
     fun needsReload(
         messages: List<UiMessage>,
         serverRunning: Boolean?,
         serverMessageCount: Int?,
         serverTurnWasRunning: Boolean,
+        turnDoneSeen: Boolean = false,
     ): Boolean {
         if (serverRunning == false && localInFlight(messages)) return true
         if (serverTurnWasRunning && serverRunning == false) return true
         if (serverMessageCount != null && serverMessageCount > messages.size) return true
+        // D. blank final assistant row after a turn we know ran (see the class doc).
+        // Requires the turn knowledge so an old blank row from an aborted turn cannot
+        // start reloading every poll.
+        if (serverRunning == false && (serverTurnWasRunning || turnDoneSeen) &&
+            blankFinalAssistantRow(messages)) return true
         return false
+    }
+
+    /** The last assistant row carries no text and is not still streaming. Tool cards on
+     *  it are irrelevant: a finished turn's answer is a text row, so a tool-call-only
+     *  tail with no text is just as missing. */
+    fun blankFinalAssistantRow(messages: List<UiMessage>): Boolean {
+        val last = messages.lastOrNull { it.role == "assistant" } ?: return false
+        if (last.isStreaming) return false
+        return last.content.isBlank()
     }
 
     /**
