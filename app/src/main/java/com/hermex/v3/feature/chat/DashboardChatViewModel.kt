@@ -1238,6 +1238,10 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         notificationCollectorJob?.cancel()
         serverRequestCollectorJob?.cancel()
         staleStreamTimeoutJob?.cancel()
+        // v0.1.897 — the poll loop belongs to this VM; an evicted VM must not keep
+        // polling (it did until now only while screenVisible stayed true).
+        pollLoopJob?.cancel()
+        pollLoopJob = null
     }
 
     // ── v0.1.123 stuck-spinner watchdog ──
@@ -2462,6 +2466,21 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     /** Whether the chat screen is currently visible (background-turn tracking). */
     private var screenVisible = true
 
+    /**
+     * v0.1.897 — the ONE foreground poll loop. Held so it can be cancelled instead of
+     * merely outlived.
+     *
+     * The Phase-0 claim that the loop ids were built to test is CONFIRMED by the
+     * 2026-10-20 field journal (v0.1.896, session 20261020_165748): every
+     * setScreenVisible(true) launched a new loop, and an old loop only died if it woke
+     * from its delay() while the flag was still false. Any hide→show inside the current
+     * delay (2 s burst / 30 s steady) resurrected the old loop, so each blip added a
+     * permanent extra loop: paired session.resume polls ~600 ms apart every 30 s for
+     * hours, and every reconcile rule ran once per loop (double full-history reloads).
+     * Cancelling the previous Job here makes "one loop per VM" structural.
+     */
+    private var pollLoopJob: Job? = null
+
     override fun setScreenVisible(visible: Boolean) {
         DebugLog.log("TRACE", "screenVisible", "${screenVisible}→$visible (sessionId=$sessionId)")
         screenVisible = visible
@@ -2487,7 +2506,17 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         // real data — the server always has it for a live session; a null
         // reading is just a transient rebuild/compression window.
         if (visible && sessionId.isNotEmpty()) {
-            viewModelScope.launch {
+            // v0.1.897 — exactly one loop per VM. Cancel any previous loop BEFORE
+            // starting a new one; the old loop's `while (screenVisible)` test could
+            // never see the false from an intervening hide because we set the flag
+            // back to true here first (see the pollLoopJob doc).
+            val superseded = pollLoopJob
+            if (superseded != null && superseded.isActive) {
+                DebugLog.log("TRACE", "poll_loop",
+                    "cancelling superseded live loop before restart (sessionId=$sessionId)")
+            }
+            pollLoopJob?.cancel()
+            pollLoopJob = viewModelScope.launch {
                 var attempts = 0
                 // Phase 0 trace: every poll loop gets an id. The claim under test is that
                 // one loop is spawned per visible/hidden cycle and never dies — the ids
@@ -2634,7 +2663,14 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                     }
                     delay(if (attempts <= 3) 2_000 else 30_000)
                 }
+                DebugLog.log("TRACE", "poll_loop",
+                    "id=$loopId ended (screenVisible=false) sessionId=$sessionId")
             }
+        } else if (!visible) {
+            // v0.1.897 — stop polling the moment the screen hides instead of waiting
+            // for the next tick's flag check; also closes the resurrection window.
+            pollLoopJob?.cancel()
+            pollLoopJob = null
         }
     }
 
