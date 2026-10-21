@@ -1,3 +1,17 @@
+## v0.1.900 (vc46) — 2026-10-21 — code-panel copy button copied the whole message, not the block
+
+- **Copy button on a code panel handed you the entire message markdown.** `CopyableCodeBlock`/`CopyableCodeFence`
+  fed `model.content` into `CodeBlockShell` as the clipboard string — but the mikepenz library passes every custom
+  component override the **full raw markdown of the message** as `MarkdownComponentModel.content` (MarkdownExtension.kt:
+  `MarkdownComponentModel(content = content, ...)`). The visible panel looked right only because the built-in renderers
+  re-slice to the AST node's own source offsets internally. So on any multi-block message, copy grabbed everything.
+- **Fix (ported from Jeff's brother's blackie build, commit `0542d2f`, v0.1.176-blackie7).** Route both wrappers
+  through the library's own splitters — `MarkdownCodeBlock(model.content, model.node)` / `MarkdownCodeFence(...)` —
+  and use the lambda's `code`/`language` for `CodeBlockShell` + rendering, so clipboard == panel contents exactly.
+  Our internals keep **SafeCodeContent** (off-composition highlighting, v0.1.897 ANR fix) instead of his
+  `highlightedCode*` — the port is wrapper-only. Verified against the AAR: `MarkdownCodeFence`/`MarkdownCodeBlock`
+  are public in the pinned 0.34.0 with the (String, ASTNode, …) { code, language, style } shape.
+
 ## v0.1.899 (vc45) — 2026-10-21 — image attach actually worked nowhere: the bounds probe was gating the decode
 
 - **"Couldn't read image" / "Couldn't read photo" on every pick (fixed, device-verified).** Reported by

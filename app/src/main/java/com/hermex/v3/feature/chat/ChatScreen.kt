@@ -71,6 +71,8 @@ import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import com.mikepenz.markdown.compose.components.MarkdownComponentModel
 import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
+import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
 import com.mikepenz.markdown.compose.LocalMarkdownTypography
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
@@ -3102,20 +3104,35 @@ private fun TodoRow(todo: UiTodo) {
     }
 }
 
-/** Code block / fence wrapper with a copy button (v0.1.93). */
+/**
+ * Code block / fence wrapper with a copy button (v0.1.93).
+ *
+ * v0.1.900: the library hands every custom component override the FULL raw markdown
+ * of the message as `model.content` (MarkdownExtension.kt: MarkdownComponentModel(content = content, ...)).
+ * The built-in renderers only show the node's own slice because MarkdownCodeFence/
+ * MarkdownCodeBlock re-slice via the AST node's child source offsets internally.
+ * We now route through those same library splitters, so the copy button copies
+ * exactly what the panel shows instead of the whole message. (Ported from brother's
+ * blackie build, commit 0542d2f; our internals keep SafeCodeContent — off-composition
+ * highlighting, v0.1.897 ANR fix — instead of his highlightedCode*.)
+ */
 @Composable
 private fun CopyableCodeBlock(model: MarkdownComponentModel, highlight: Boolean) {
-    val langTag = model.extra["language"] as? String
-    CodeBlockShell(code = model.content, language = langTag ?: "code") {
-        SafeCodeContent(model.content, langTag, highlight)
+    MarkdownCodeBlock(model.content, model.node) { code, language, _ ->
+        val langTag = language ?: (model.extra["language"] as? String)
+        CodeBlockShell(code = code, language = langTag ?: "code") {
+            SafeCodeContent(code, langTag, highlight)
+        }
     }
 }
 
 @Composable
 private fun CopyableCodeFence(model: MarkdownComponentModel, highlight: Boolean) {
-    val langTag = model.extra["language"] as? String
-    CodeBlockShell(code = model.content, language = langTag ?: "code") {
-        SafeCodeContent(model.content, langTag, highlight)
+    MarkdownCodeFence(model.content, model.node) { code, language, _ ->
+        val langTag = language ?: (model.extra["language"] as? String)
+        CodeBlockShell(code = code, language = langTag ?: "code") {
+            SafeCodeContent(code, langTag, highlight)
+        }
     }
 }
 
