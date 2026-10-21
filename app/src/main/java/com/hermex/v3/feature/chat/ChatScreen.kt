@@ -71,8 +71,7 @@ import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import com.mikepenz.markdown.compose.components.MarkdownComponentModel
 import com.mikepenz.markdown.compose.components.markdownComponents
-import com.mikepenz.markdown.compose.elements.highlightedCodeBlock
-import com.mikepenz.markdown.compose.elements.highlightedCodeFence
+import com.mikepenz.markdown.compose.LocalMarkdownTypography
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
@@ -87,6 +86,15 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.runtime.produceState
+import dev.snipme.highlights.Highlights
+import dev.snipme.highlights.model.BoldHighlight
+import dev.snipme.highlights.model.ColorHighlight
+import dev.snipme.highlights.model.SyntaxLanguage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -1843,8 +1851,8 @@ private fun MessageBubble(
                             text = MaterialTheme.typography.bodyMedium,
                         ),
                         components = markdownComponents(
-                            codeBlock = { CopyableCodeBlock(it) },
-                            codeFence = { CopyableCodeFence(it) },
+                            codeBlock = { CopyableCodeBlock(it, highlight = !message.isStreaming) },
+                            codeFence = { CopyableCodeFence(it, highlight = !message.isStreaming) },
                         ),
                     )
                 }
@@ -3078,17 +3086,71 @@ private fun TodoRow(todo: UiTodo) {
 
 /** Code block / fence wrapper with a copy button (v0.1.93). */
 @Composable
-private fun CopyableCodeBlock(model: MarkdownComponentModel) {
-    CodeBlockShell(code = model.content, language = (model.extra["language"] as? String) ?: "code") {
-        highlightedCodeBlock(model)
+private fun CopyableCodeBlock(model: MarkdownComponentModel, highlight: Boolean) {
+    val langTag = model.extra["language"] as? String
+    CodeBlockShell(code = model.content, language = langTag ?: "code") {
+        SafeCodeContent(model.content, langTag, highlight)
     }
 }
 
 @Composable
-private fun CopyableCodeFence(model: MarkdownComponentModel) {
-    CodeBlockShell(code = model.content, language = (model.extra["language"] as? String) ?: "code") {
-        highlightedCodeFence(model)
+private fun CopyableCodeFence(model: MarkdownComponentModel, highlight: Boolean) {
+    val langTag = model.extra["language"] as? String
+    CodeBlockShell(code = model.content, language = langTag ?: "code") {
+        SafeCodeContent(model.content, langTag, highlight)
     }
+}
+
+// v0.1.897(e): the ANR loop (bug report 79d693d68801). The library's
+// highlightedCodeFence builds snipme Highlights SYNCHRONOUSLY inside composition
+// — the dump caught the main thread at 5.8s user-time in dev.snipme CodeAnalyzer
+// while history-load composed many fences; input dispatch timed out twice in
+// 30s (ANR → relaunch → same load → ANR). Also: language AUTO-DETECTION (any
+// untagged fence) is the most expensive scan and buys nothing for LLM output.
+// So: no highlighting during streaming, never auto-detect (untagged => plain),
+// long fences stay plain, and everything that does highlight runs on
+// Dispatchers.Default behind runCatching — colors land a frame late, the UI
+// never blocks, and no snipme throw can crash the app again.
+private const val HIGHLIGHT_MAX_CHARS = 8_000
+
+/** Pure (off-main-thread safe): snipme pass -> AnnotatedString. Unknown tag or
+ * any failure returns plain text. */
+internal fun snipmeAnnotated(code: String, langName: String): AnnotatedString {
+    val lang = SyntaxLanguage.getByName(langName) ?: return AnnotatedString(code)
+    val highlights = runCatching {
+        Highlights.Builder().language(lang).code(code).build().getHighlights()
+    }.getOrNull() ?: return AnnotatedString(code)
+    return AnnotatedString.Builder(code).apply {
+        highlights.forEach { h ->
+            val loc = h.location
+            val start = loc.start.coerceAtLeast(0)
+            val end = loc.end.coerceAtMost(code.length)
+            if (start < end) when (h) {
+                is ColorHighlight -> addStyle(SpanStyle(color = Color(h.rgb)), start, end)
+                is BoldHighlight -> addStyle(SpanStyle(fontWeight = FontWeight.Bold), start, end)
+            }
+        }
+    }.toAnnotatedString()
+}
+
+@Composable
+private fun SafeCodeContent(code: String, langTag: String?, highlight: Boolean) {
+    val style = LocalMarkdownTypography.current.code
+    val eligible = highlight && langTag != null && code.length in 1..HIGHLIGHT_MAX_CHARS
+    val plain = remember(code) { AnnotatedString(code) }
+    val annotated by produceState(plain, code, langTag, eligible) {
+        value = if (!eligible) plain else withContext(Dispatchers.Default) {
+            runCatching { snipmeAnnotated(code, langTag!!) }.getOrDefault(plain)
+        }
+    }
+    Text(
+        text = annotated,
+        style = style,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(LocalUiSurfaces.current.codeBlock)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    )
 }
 
 @Composable

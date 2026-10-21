@@ -1581,7 +1581,12 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         val idx = ensureStreamingPlaceholder(msgs)
         // Placeholder creation resets streamingContentSeen; a content-bearing flush
         // re-marks it exactly like the original per-delta MessageDelta handler did.
-        if (contentChunk.isNotEmpty()) streamingContentSeen = true
+        // v0.1.897(d): THINKING counts too. The 2026-10-20 journal caught the
+        // watchdog nuking a live turn at 15:27:21 while ThinkingDeltas were still
+        // arriving — a thinking-only turn (strata/flashnext long think) left the
+        // flag false, so an 11s gap between thinking bursts read as "completion
+        // signal lost". Any streamed output is proof of life.
+        if (contentChunk.isNotEmpty() || thinkChunk.isNotEmpty()) streamingContentSeen = true
         val cur = msgs[idx]
         msgs[idx] = cur.copy(
             content = if (contentChunk.isEmpty()) cur.content else cur.content + contentChunk,
@@ -1702,7 +1707,13 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             } else {
                 val dtext = if (n is RpcNotification.ThinkingDelta) n.text
                             else (n as RpcNotification.ReasoningDelta).text
-                dtext?.let { pendingThinkBuf.append(it); pendingThinkDeltas++ }
+                // v0.1.897(d): thinking/reasoning deltas are stream activity too —
+                // mark at append time so the guard stands down immediately, not
+                // only after the 110ms flush (the flush re-marks post-placeholder).
+                dtext?.let {
+                    streamingContentSeen = true
+                    pendingThinkBuf.append(it); pendingThinkDeltas++
+                }
             }
             if (pendingDeltaBuf.length + pendingThinkBuf.length >= DELTA_FLUSH_CHAR_CAP) {
                 flushDeltas()  // cap: very fast streams commit sooner, bounded lag
@@ -1719,6 +1730,24 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         armStaleStreamGuard()
 
         val msgs = uiState.messages.toMutableList()
+
+        // v0.1.897(f) — "thinking disappears when tools start". The gateway emits
+        // message.completed per assistant SEGMENT, not per turn: thinking → tool
+        // calls → more thinking is several completed segments inside one live turn.
+        // The first segment's completion sets turnDoneSeen=true; then the tail
+        // force-close below saw the next segment's placeholder as "stray" and set
+        // the global isStreaming=false while the row itself stayed streaming. That
+        // combination hides the docked live panel AND suppresses the per-message
+        // ThinkingScrollBox (which requires !isStreaming) — so thinking kept
+        // accumulating but rendered nowhere until the next completion. A tool or
+        // new-segment event is proof the turn continues: clear the flag.
+        if ((n is RpcNotification.ToolGenerating || n is RpcNotification.ToolStart ||
+             n is RpcNotification.MessageStarted) && turnDoneSeen) {
+            DebugLog.log("TRACE", "DashboardChat",
+                "v0.1.897(f): ${n::class.simpleName} after a message.completed — this is a new " +
+                "segment of a still-running turn; clearing turnDoneSeen so the live panel keeps rendering")
+            turnDoneSeen = false
+        }
 
         // v0.1.123/137 safety net — stuck-spinner guard. If a streaming content
         // event (delta / tool event) arrives but there is NO live streaming
@@ -1764,6 +1793,16 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             is RpcNotification.MessageStarted -> {
                 DebugLog.log("RPC", "DashboardChat",
                     "message.start — serverId=${n.messageId}")
+                // v0.1.897(f): a new assistant segment PROVES this turn is still
+                // running. The gateway emits message.completed per segment, so on a
+                // multi-segment turn (thinking → tools → thinking → answer) an early
+                // segment's completion set turnDoneSeen=true; the v0.1.137 tail
+                // force-close then cleared the global streaming flag while the row
+                // stayed streaming — hiding the dock panel AND suppressing the
+                // ThinkingScrollBox at the same time, so streamed thinking simply
+                // vanished when tools began. The flag means *segment* done, not
+                // turn done — reset it wherever the turn demonstrably continues.
+                if (turnDoneSeen) turnDoneSeen = false
                 val serverId = n.messageId
                 val idx = ensureStreamingPlaceholder(msgs)
                 msgs[idx] = msgs[idx].copy(
