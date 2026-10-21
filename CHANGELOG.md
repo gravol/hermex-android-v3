@@ -1,3 +1,32 @@
+## v0.1.899 (vc45) — 2026-10-21 — image attach actually worked nowhere: the bounds probe was gating the decode
+
+- **"Couldn't read image" / "Couldn't read photo" on every pick (fixed, device-verified).** Reported by
+  Jeff as "when I try to send an image from my phone it says image could not be read". `downscaleAndDecode`
+  opened the picked URI, ran a bounds-only probe (`BitmapFactory.Options.inJustDecodeBounds = true`) and then
+  did `?: return null` on its **return value** — but with `inJustDecodeBounds` the platform decoder returns
+  `null` by design and only fills `outWidth`/`outHeight`. So the function bailed out before the real decode
+  ever ran: gallery pick AND camera capture failed for **every** input format, on every version since the
+  feature existed (v0.1.56 in the frozen v2 tree, v0.1.0 in v3). Not a regression and not format-related.
+  The earlier working theory (HEIF that `BitmapFactory` cannot decode) is **wrong as the cause** — kept in the
+  QA reference as one failure mode among others, no longer as the headline one.
+- **Fix shape.** The probe's result is ignored; decodability is judged on the dimensions it filled in
+  (`outWidth/outHeight <= 0` → not an image / not decodable → same toast). Sampling math moved to pure
+  `decodeSampleSize(width, height, maxDim)` + `MAX_ATTACH_DIM`, covered by `ImageAttachSamplingTest`
+  (4 tests: passthrough under the limit, power-of-two ladder for 3200/4032/9000 px, one oversized side,
+  and a minimality sweep). `OutOfMemoryError` on a huge decode now returns null (toast) instead of
+  crashing the process.
+- **Device proof, Pixel 8 (`shiba`, 39151FDJH00HX4), release-signed build.** Positive control first on the
+  installed v0.1.898: pushed a known plain JPEG into `/sdcard/Pictures`, MediaStore-scanned it, picked it in
+  the photo picker → toast "Couldn't read image" (so a plain JPEG fails too — rules out HEIF/permissions).
+  After installing the fixed build over it (same signing cert, login preserved): the same pick produced the
+  composer thumbnail + "Image attached", and sending staged a real file on the gateway —
+  `~/.hermes/images/upload_20261021_155458_1.jpg`, valid JPEG 1200x900, average pixel (40,90,159) against
+  the generated source RGB(40,90,160). Decode → re-encode → base64 → `image.attach_bytes` verified end to end.
+- **Not covered by this change:** the camera path shares the same helper, so it is fixed by the same edit but
+  was not separately driven on device (no camera capture trial). HEIF input remains untested on a device that
+  holds a real `.heic` — if one shows up failing after this version, that is the *next* hypothesis, with its
+  own test, not an assumption carried over from the old note.
+
 ## v0.1.897 (vc43) — 2026-10-19 — session.title routed by frame id; Connection/Push Delivery rewritten for a second user
 
 - **`session.title` never renamed an in-app chat header (fixed, device-verified).** The full diagnosis,

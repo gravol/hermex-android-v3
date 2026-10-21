@@ -2921,23 +2921,41 @@ private fun ToolCallCard(
  */
 private fun downscaleAndDecode(context: Context, uri: Uri): Bitmap? {
     return try {
+        // Bounds probe. With inJustDecodeBounds the platform decoder ALWAYS returns null —
+        // it allocates nothing and reports only outWidth/outHeight. Its return value must
+        // never gate the flow (that made every attach fail before the real decode ran);
+        // decodability is judged on the dimensions it filled in.
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, bounds)
-        } ?: return null
-        var sample = 1
-        val maxDim = 1600
-        while ((bounds.outWidth / sample) > maxDim || (bounds.outHeight / sample) > maxDim) {
-            sample *= 2
         }
-        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = decodeSampleSize(bounds.outWidth, bounds.outHeight, MAX_ATTACH_DIM)
+        }
         context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, opts)
-        } ?: return null
+        }
     } catch (_: Exception) {
+        null
+    } catch (_: OutOfMemoryError) {
         null
     }
 }
+
+/**
+ * Power-of-two inSampleSize that keeps both dimensions at or below [maxDim].
+ * Pure so the sampling math is unit-testable without a device.
+ */
+internal fun decodeSampleSize(width: Int, height: Int, maxDim: Int): Int {
+    var sample = 1
+    while ((width / sample) > maxDim || (height / sample) > maxDim) {
+        sample *= 2
+    }
+    return sample
+}
+
+private const val MAX_ATTACH_DIM = 1600
 
 /** Encode a decoded Bitmap as a base64 JPEG data URL for sending to the server. */
 private fun bitmapToDataUrl(bmp: Bitmap): String {
