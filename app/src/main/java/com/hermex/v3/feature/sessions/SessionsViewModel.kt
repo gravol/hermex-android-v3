@@ -19,6 +19,25 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 
+/**
+ * v0.1.902: the Insights panel's own view of the session list.
+ *
+ * It used to read [SessionsUiState.sessions] — the drawer's page — which made the DAY/WEEK/MONTH
+ * figures only as wide as whatever the drawer happened to have loaded (25 rows since v0.1.901, so
+ * a "month" that could see two days), and left the panel blank with no explanation whenever the
+ * drawer had not finished loading. The panel now asks for its own window-sized snapshot on open,
+ * and carries the two facts the UI has to be honest about: whether a fetch is in flight, and
+ * whether the snapshot stopped short of the full history.
+ */
+data class InsightsSnapshot(
+    val sessions: List<SessionSummary> = emptyList(),
+    val isLoading: Boolean = false,
+    /** False when the last fetch returned a FULL page — older conversations exist beyond it. */
+    val complete: Boolean = true,
+    val fetchedAt: Long = 0L,
+    val error: String? = null,
+)
+
 data class SessionsUiState(
     val sessions: List<SessionSummary> = emptyList(),
     val isLoading: Boolean = false,
@@ -28,6 +47,10 @@ data class SessionsUiState(
     // session.list is refetched on every sessions.changed; the full list costs
     // hundreds of KB and is only fetched when the user asks for it.
     val fullListLoaded: Boolean = false,
+    // v0.1.902: the Insights panel's window-sized snapshot — see [InsightsSnapshot]. Kept apart
+    // from `sessions` on purpose: the drawer page is small and refetched on every
+    // sessions.changed, while an insights figure has to cover the whole window it claims.
+    val insights: InsightsSnapshot = InsightsSnapshot(),
     val isCreating: Boolean = false,
     val error: String? = null,
     val deleting: Boolean = false,
@@ -117,6 +140,82 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             "loadMoreSessions: raising session.list limit $listLimit -> $next")
         listLimit = next
         loadSessions()
+    }
+
+    /**
+     * v0.1.902: fetch the snapshot the Insights panel totals.
+     *
+     * The panel must not total the drawer's page. Measured on this db against the live gateway:
+     * limit=25 → 8.7 KB and a page that spans two days, while the true window figures were
+     * DAY 12 sessions / 2.1M in, WEEK 75 / 32.8M, MONTH 147 / 58.4M — a 25-row page can only
+     * ever report a fraction of that, and an unloaded drawer reported nothing at all. So Insights
+     * asks for its own wide snapshot; tiers exist so a full page (older history exists) can be
+     * retried wider instead of silently under-reporting.
+     */
+    private var insightsTier = 0
+    private val insightTiers = intArrayOf(500, 2000)
+    private var insightsInFlight = false
+
+    fun loadInsights(force: Boolean = false) {
+        if (insightsInFlight) return
+        val current = _uiState.value.insights
+        if (!force && current.sessions.isNotEmpty() &&
+            System.currentTimeMillis() - current.fetchedAt < INSIGHTS_TTL_MS
+        ) {
+            DebugLog.log("INFO", "SessionsVM", "loadInsights: reusing ${current.sessions.size}-row snapshot")
+            return
+        }
+        viewModelScope.launch {
+            insightsInFlight = true
+            _uiState.value = _uiState.value.copy(insights = current.copy(isLoading = true, error = null))
+            val client = sharedRpc.takeIf { sharedWs.isConnected } ?: ensureShared()
+            if (client == null) {
+                DebugLog.log("ERROR", "SessionsVM", "loadInsights: no observer socket — keeping last snapshot")
+                _uiState.value = _uiState.value.copy(
+                    insights = current.copy(isLoading = false, error = "connection unavailable"),
+                )
+                insightsInFlight = false
+                return@launch
+            }
+            val asked = insightTiers[insightsTier.coerceAtMost(insightTiers.lastIndex)]
+            try {
+                var rows = client.sessionList(limit = asked)
+                // A FULL page means older history exists beyond it. Rather than show a short
+                // total and wait for a tap on Refresh, escalate once inside this call: the
+                // window figure either covers the window or we genuinely have thousands of rows.
+                if (rows.size >= asked && insightsTier < insightTiers.lastIndex) {
+                    val wider = insightTiers[++insightsTier]
+                    DebugLog.log("INFO", "SessionsVM",
+                        "loadInsights: page full at $asked — escalating to $wider in-place")
+                    rows = client.sessionList(limit = wider)
+                }
+                val completeLimit = insightTiers[insightsTier]
+                // A short page is proof the history is fully covered; a full page is not.
+                val complete = rows.size < completeLimit
+                DebugLog.log(
+                    "INFO", "SessionsVM",
+                    "loadInsights: session.list(limit=$completeLimit) → ${rows.size} rows " +
+                        if (complete) "(window fully covered)" else "(page FULL: older rows exist)",
+                )
+                val mapped = rows.map { it.toSessionSummary() }
+                _uiState.value = _uiState.value.copy(
+                    insights = InsightsSnapshot(
+                        sessions = mapped,
+                        isLoading = false,
+                        complete = complete,
+                        fetchedAt = System.currentTimeMillis(),
+                    ),
+                )
+            } catch (e: Exception) {
+                Log.e("Hermex", "SessionsViewModel: insights load failed", e)
+                DebugLog.log("ERROR", "SessionsVM", "loadInsights failed: ${e.message}")
+                _uiState.value = _uiState.value.copy(
+                    insights = current.copy(isLoading = false, error = e.message ?: "session.list failed"),
+                )
+            } finally {
+                insightsInFlight = false
+            }
+        }
     }
 
     fun loadSessions() {
@@ -338,5 +437,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
 
     companion object {
         private const val LIST_TIER_START = 25
+        /** Reuse a fresh Insights snapshot on re-open instead of refetching hundreds of KB. */
+        private const val INSIGHTS_TTL_MS = 120_000L
     }
 }

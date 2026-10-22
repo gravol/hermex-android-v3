@@ -54,6 +54,13 @@ fun WebuiMenuDrawer(
 ) {
     val state by sessionsVM.uiState.collectAsState()
     var panel by rememberSaveable { mutableStateOf("chat") }
+
+    // v0.1.902: opening Insights fetches the panel its own snapshot. The drawer's page is 25 rows
+    // by design (it refetches on every sessions.changed); a window total built from that page is
+    // wrong for WEEK/MONTH and blank when the drawer has not loaded yet.
+    LaunchedEffect(panel) {
+        if (panel == "insights") sessionsVM.loadInsights()
+    }
     var query by rememberSaveable { mutableStateOf("") }
     var sourceFilter by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -156,7 +163,10 @@ fun WebuiMenuDrawer(
                                 onClose = { panel = "chat" },
                             )
                             "insights" -> InsightsPanel(
-                                sessions = state.sessions,
+                                sessions = state.insights.sessions,
+                                loading = state.insights.isLoading,
+                                truncated = !state.insights.complete,
+                                onRetry = { sessionsVM.loadInsights(force = true) },
                                 onClose = { panel = "chat" },
                             )
                             "settings" -> SettingsPanel(onNavigate = onNavigate)

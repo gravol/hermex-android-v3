@@ -42,42 +42,33 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hermex.core.network.SessionSummary
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.util.Locale
 
 /**
- * Insights panel (v0.1.146): token-usage summary over the session list,
- * bucketed by day / week / month, broken down per model. Pure client-side
- * aggregation — reads input_tokens / output_tokens that session.list already
- * returns and the per-session model id. Sessions with unknown usage
- * (inputTokens < 0) are skipped so a partial payload never skews totals.
+ * Insights panel (v0.1.146): token-usage summary, bucketed by day / week / month and broken
+ * down per model. The math lives in [InsightsAggregate] (pure, unit-tested).
+ *
+ * v0.1.902 — the panel no longer reads the drawer's page. It used to aggregate whatever
+ * `state.sessions` happened to hold, which after the v0.1.901 tiered default (25 rows) meant a
+ * MONTH figure that could only ever see 25 conversations, and an empty drawer rendering a
+ * blank panel with nothing to explain itself. The caller now hands it its own window-sized
+ * snapshot plus the two facts the UI must be honest about: still loading, and whether the
+ * snapshot stopped short of the full history.
  */
 @Composable
 fun InsightsPanel(
     sessions: List<SessionSummary>,
     onClose: () -> Unit,
+    loading: Boolean = false,
+    truncated: Boolean = false,
+    onRetry: (() -> Unit)? = null,
 ) {
-    var window by rememberSaveable { mutableIntStateOf(INSIGHTS_DAY) }
+    var window by rememberSaveable { mutableIntStateOf(InsightsAggregate.DAY) }
 
-    val usable = remember(sessions) {
-        sessions.filter { it.inputTokens >= 0 || it.outputTokens >= 0 }
-    }
-
-    // Sessions whose last activity falls inside the selected window.
-    val inWindow = remember(usable, window) {
-        usable.filter { s ->
-            val ts = s.lastActivityAt ?: s.lastActive ?: s.endedAt ?: s.startedAt
-            ts != null && isInside(ts.toLong(), window)
-        }
-    }
-
-    // Per-model rollups within the window: input + output + total tokens + session count.
-    val modelRows = remember(inWindow) { computeModelRows(inWindow) }
-    val grandInput = remember(inWindow) { inWindow.sumOf { it.inputTokens.coerceAtLeast(0) } }
-    val grandOutput = remember(inWindow) { inWindow.sumOf { it.outputTokens.coerceAtLeast(0) } }
-    val grandTotal = grandInput + grandOutput
+    val result = remember(sessions, window) { InsightsAggregate.aggregate(sessions, window) }
+    val modelRows = result.modelRows
+    val grandInput = result.grandInput
+    val grandOutput = result.grandOutput
+    val grandTotal = result.grandTotal
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header: INSIGHTS + close
@@ -106,7 +97,11 @@ fun InsightsPanel(
                 .padding(horizontal = 12.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            val labels = listOf("DAY" to INSIGHTS_DAY, "WEEK" to INSIGHTS_WEEK, "MONTH" to INSIGHTS_MONTH)
+            val labels = listOf(
+                "DAY" to InsightsAggregate.DAY,
+                "WEEK" to InsightsAggregate.WEEK,
+                "MONTH" to InsightsAggregate.MONTH,
+            )
             labels.forEach { (label, w) ->
                 Button(
                     onClick = { window = w },
@@ -168,22 +163,45 @@ fun InsightsPanel(
 
         HorizontalDivider(color = Color(0xFF2A2A45))
 
-        if (modelRows.isEmpty()) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text(
-                    text = "No usage data yet",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFFC0C0C0),
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "Token totals appear here once sessions report input/output tokens.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF888888),
-                )
-            }
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+        // v0.1.902: three different things used to render as the same blank panel. They are now
+        // named, because "nothing is populated" is unanswerable from the phone — the user cannot
+        // tell a fetch that has not run from a window that genuinely has no sessions in it.
+        if (truncated && modelRows.isNotEmpty()) {
+            Text(
+                text = "Older conversations exist beyond this snapshot — totals cover what was fetched.",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFB8860B),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+        }
+        when {
+            loading && result.totalRows == 0 -> PanelNotice(
+                title = "Loading…",
+                body = "Fetching the conversations this window covers.",
+            )
+
+            result.totalRows == 0 -> PanelNotice(
+                title = "No conversations loaded",
+                body = "The session list came back empty, so there is nothing to total. " +
+                    "This is a connection problem, not a quiet period.",
+                actionLabel = if (onRetry != null) "Try again" else null,
+                onAction = onRetry,
+            )
+
+            modelRows.isEmpty() -> PanelNotice(
+                title = "No usage in this window",
+                body = when {
+                    result.rowsWithoutUsage > 0 ->
+                        "${result.rowsWithoutUsage} session${if (result.rowsWithoutUsage == 1) "" else "s"} " +
+                            "loaded but none reported token usage."
+                    else -> "${result.totalRows} session${if (result.totalRows == 1) "" else "s"} " +
+                        "available; none of them are active in the selected window."
+                },
+                actionLabel = if (onRetry != null) "Refresh" else null,
+                onAction = onRetry,
+            )
+
+            else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                 item {
                     Text(
                         text = "PER MODEL",
@@ -201,36 +219,38 @@ fun InsightsPanel(
     }
 }
 
-private data class ModelUsageRow(
-    val model: String,
-    val inputTokens: Long,
-    val outputTokens: Long,
-    val totalTokens: Long,
-    val sessionCount: Int,
-)
-
-/** Normalize the model id into a readable label (strip provider prefixes). */
-private fun modelLabel(model: String?): String {
-    if (model.isNullOrBlank()) return "Unknown"
-    // e.g. "deepseek-v4-pro" or "custom:clerk-genesis" -> show after the slash.
-    return model.substringAfterLast('/', model)
-}
-
-private fun computeModelRows(sessions: List<SessionSummary>): List<ModelUsageRow> {
-    val grouped = sessions.filter { it.inputTokens >= 0 && it.outputTokens >= 0 }
-        .groupBy { modelLabel(it.model) }
-    return grouped.entries.map { (model, list) ->
-        val input = list.sumOf { it.inputTokens.coerceAtLeast(0) }
-        val output = list.sumOf { it.outputTokens.coerceAtLeast(0) }
-        ModelUsageRow(
-            model = model,
-            inputTokens = input,
-            outputTokens = output,
-            totalTokens = input + output,
-            sessionCount = list.size,
+@Composable
+private fun PanelNotice(
+    title: String,
+    body: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Column(modifier = Modifier.padding(20.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFFC0C0C0),
         )
-    }.sortedByDescending { it.totalTokens }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = body,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF888888),
+        )
+        if (actionLabel != null && onAction != null) {
+            Spacer(Modifier.height(10.dp))
+            Button(onClick = onAction, shape = RoundedCornerShape(8.dp)) {
+                Text(text = actionLabel, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
 }
+
+private typealias ModelUsageRow = InsightsAggregate.ModelUsageRow
+
+/** Compact token formatting lives in the aggregate so tests assert the same string the UI shows. */
+private fun formatTokens(tokens: Long): String = InsightsAggregate.formatTokens(tokens)
 
 @Composable
 private fun ModelRow(row: ModelUsageRow) {
@@ -275,33 +295,4 @@ private fun ModelRow(row: ModelUsageRow) {
         }
     }
     HorizontalDivider(color = Color(0xFF2A2A45))
-}
-
-// ── Window math ──
-
-private const val INSIGHTS_DAY = 0
-private const val INSIGHTS_WEEK = 1
-private const val INSIGHTS_MONTH = 2
-
-/** True if [epochSeconds] falls within the selected window ending now. */
-private fun isInside(epochSeconds: Long, window: Int): Boolean {
-    if (epochSeconds <= 0) return false
-    val zone = ZoneId.systemDefault()
-    val now = Instant.ofEpochSecond(epochSeconds).atZone(zone)
-    return when (window) {
-        INSIGHTS_DAY -> now.toLocalDate() == LocalDate.now(zone)
-        INSIGHTS_WEEK -> !now.toLocalDate().isBefore(LocalDate.now(zone).minusDays(6))
-        INSIGHTS_MONTH -> now.year == LocalDate.now(zone).year &&
-            now.month == LocalDate.now(zone).month
-        else -> false
-    }
-}
-
-/** Compact token formatting: 85123 → "85.1k", 1048576 → "1.0M". */
-private fun formatTokens(tokens: Long): String {
-    return when {
-        tokens >= 1_000_000 -> String.format(Locale.US, "%.1fM", tokens / 1_000_000f)
-        tokens >= 1_000 -> String.format(Locale.US, "%.1fk", tokens / 1_000f)
-        else -> tokens.toString()
-    }
 }

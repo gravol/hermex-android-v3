@@ -1,3 +1,38 @@
+## v0.1.902 (vc48) — 2026-10-22 — Insights was totalling the drawer's page, so MONTH saw two days
+
+- **Reported by Jeff: "insights are broken again, nothing is populated when I click the section."** Ruled the server out first: 
+  running the gateway's own `session.list` projection in-process against the live `state.db` returned every field the panel
+  needs (`input_tokens`, `output_tokens`, `model`, `message_count`, `last_activity_at`) for all 25 newest rows. Reproduced on
+  the Pixel 8 at v0.1.901 against that same live gateway: the panel rendered — `665.6k in / 245.8k out`, `Total 911.3k`,
+  two model rows — so it was not dead. It was **wrong**, and could be empty, for the same reason.
+- **Root cause is self-inflicted, from v0.1.901 shipped ~4 h earlier.** That release cut the drawer's default
+  `session.list` to an explicit 25 rows (a good change: 72.6 KB → 8.7 KB per `sessions.changed` refetch). But
+  `WebuiMenuDrawer` fed that page straight into `InsightsPanel(sessions = state.sessions)`, so a DAY/WEEK/MONTH total became
+  "whatever the drawer happened to have loaded". Measured against the same db: true **DAY 12 sessions / 2.13M in / 756k out,
+  WEEK 75 / 32.8M / 4.58M, MONTH 147 / 58.4M / 14.3M** — while a 25-row page spans only Oct 20→22, so MONTH was off by an
+  order of magnitude and said nothing about it. When the drawer's own fetch had not finished (or failed), the list was empty
+  and the panel rendered blank with no explanation — three different failures (not fetched / empty list / genuinely quiet
+  window) sharing one blank screen. That is exactly what "nothing is populated" cannot distinguish from the phone.
+- **Fix: the panel owns its data.** New `InsightsSnapshot` in `SessionsUiState` + `SessionsViewModel.loadInsights()` —
+  fetched on open, tiers 500 → 2000 (measured: 500 rows ≈ 184 KB over the tailnet; this db's whole month is 147 sessions),
+  120 s TTL so re-opening does not refetch hundreds of KB, in-flight guard. A page that comes back FULL sets
+  `complete = false` instead of silently under-reporting, and the panel says so.
+- **Honest states instead of blanks:** `Loading…`, `No conversations loaded` + *Try again* (connection problem, not a quiet
+  period), `No usage in this window` with counts ("N sessions available; none active in the selected window" vs "N loaded but
+  none reported token usage"), and an amber note when the snapshot stops short of history.
+- **Math extracted to `InsightsAggregate.kt`** (pure: window bucketing, per-model rollups, formatting) and pinned by
+  `InsightsAggregateTest` — 9 JVM tests, fixed clocks, `America/Vancouver` zone: DAY is today only, WEEK is seven local days
+  inclusive of the sixth day back, MONTH is the calendar month and NOT a rolling 30 days (the pre-existing code was already
+  right there; now it is asserted), zero/missing timestamps never count, sessions with unknown usage (`-1`) are excluded from
+  totals but counted, empty-list vs empty-window are distinguishable, and the exact `formatTokens` strings the UI prints.
+  This is the second time this panel has been wrong by construction rather than by coding mistake (first: the gateway omitting
+  `model`, Aug 2026 — see skill `hermexandroid-qa/references/insights-model-filter-missing-server-field.md`), which is why the
+  logic moved out of the composable.
+- **Bonus defect the new test caught:** `modelLabel`'s comment claimed provider prefixes were stripped; the code only handled
+  `/`, so `custom:clerk-flashnext-uncensored` displayed whole. Now strips both `provider/` and `scheme:`. Deliberate
+  consequence: one model reached through two providers shows as one row — the panel answers "what did this model cost", not
+  "which route served it".
+
 ## v0.1.901 (vc47) — 2026-10-22 — the drawer could not see 1,027 of 1,227 sessions; `/queue` interrupted instead of queueing
 
 - **The session list was silently truncated at 200 and cost 73 KB per refetch.** `JsonRpcClient.sessionList()` sent
