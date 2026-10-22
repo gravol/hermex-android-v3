@@ -126,6 +126,7 @@ fun WebuiMenuDrawer(
                                 query = query,
                                 onQueryChange = { query = it },
                                 sourceFilter = sourceFilter,
+                                onLoadMore = { sessionsVM.loadMoreSessions() },
                                 onSourceFilter = { sourceFilter = it },
                                 onNewSession = {
                                     if (!state.isCreating) {
@@ -198,6 +199,7 @@ private fun ChatPanel(
     onSourceFilter: (String?) -> Unit,
     onNewSession: () -> Unit,
     onOpenSession: (SessionSummary) -> Unit,
+    onLoadMore: () -> Unit,
 ) {
     val q = query.trim()
     val filtered = remember(state.sessions, q, sourceFilter) {
@@ -311,6 +313,28 @@ private fun ChatPanel(
                 }
                 items(sessions, key = { it.id }) { session ->
                     ChatSessionRow(session = session, onClick = { onOpenSession(session) })
+                }
+            }
+            // v0.1.901: the filter above can only match rows that were LOADED, and
+            // default loads are deliberately small (25 rows ~ 9 KB instead of the
+            // server-default 73 KB per sessions.changed refetch). This footer is the
+            // explicit escape hatch: each tap raises the limit one tier and stays
+            // raised for this ViewModel. It hides itself when a fetch comes back short
+            // of the requested limit — proof there is nothing older.
+            if (state.sessions.isNotEmpty() && !state.fullListLoaded) {
+                item(key = "load_more_sessions") {
+                    TextButton(
+                        onClick = { onLoadMore() },
+                        enabled = !state.isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Text(
+                            if (state.isLoading) "Loading…" else "Load older conversations",
+                            color = Color(0xFF9A9AB8),
+                        )
+                    }
                 }
             }
         }

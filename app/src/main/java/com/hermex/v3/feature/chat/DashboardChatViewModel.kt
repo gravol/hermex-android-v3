@@ -551,7 +551,11 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             // Materialize it FOR REAL: session.create, adopt the new DB key, retry.
             DebugLog.log("STATE", "SessionID",
                 "$op self-heal resume exhausted 4007 (no stored row) — session.create + adopt key: dbKey=$sessionId")
-            val newKey = runCatching { rpcClient.createSession() }.getOrNull()
+            // v0.1.901: adopt the DURABLE key, not the live sid — this value becomes
+            // this ViewModel's sessionId, which everything downstream (resume, notify,
+            // deep link) is keyed on. createSession() returned the live sid, so an
+            // adopted "new DB key" was actually a ~20-second routing handle.
+            val newKey = runCatching { rpcClient.createSessionWithKey().second ?: rpcClient.createSessionWithKey().first }.getOrNull()
             if (newKey != null) {
                 DebugLog.log("STATE", "SessionID",
                     "$op self-heal created fresh session: old=$sessionId new=$newKey — retrying attach")
@@ -841,6 +845,22 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
      *     session.resume and retry once (same self-heal as prompt.submit).
      */
     private suspend fun execSlashWithFallbacks(command: String): JsonObject {
+        // v0.1.901: these RPCs resolve `_sessions` by LIVE SID only, so with liveSid
+        // blank the call used to send the DB key and deterministically 4001, then our
+        // own 4001 handler resumed and retried — a wasted round trip that could surface
+        // as a visible command failure. Resume first, then ask.
+        if (liveSid.isBlank()) {
+            try {
+                val preflight = rpcClient.sessionResume(sessionId, omitMessages = true)
+                setLiveSid(preflight.session_id, "slash_exec_preflight_resume")
+                resumedSessionId = preflight.resumed ?: sessionId
+                DebugLog.log("STATE", "SessionID",
+                    "slash.exec preflight: no live sid — resumed before calling (dbKey=$sessionId liveSid=$liveSid)")
+            } catch (e: Exception) {
+                DebugLog.log("ERROR", "SessionID",
+                    "slash.exec preflight resume FAILED (dbKey=$sessionId): ${e.message} — attempting anyway")
+            }
+        }
         return try {
             // slash.exec resolves _sessions by LIVE SID only (no DB-key fallback —
             // proven live: a persisted DB key 4001s while the live SID works), so
@@ -921,26 +941,55 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         uiState = uiState.copy(messages = msgs)
     }
 
-    /** /steer <text> — inject into the next tool call via session.steer. */
+    /** /steer <text> — inject into the live turn via session.steer. */
     private fun handleSteer(text: String) {
         if (text.isBlank()) {
             addCommandAck("⚠️ /steer needs some text to steer with.")
             return
         }
-        addCommandAck("⏳ Steering for next tool call…")
+        // v0.1.901: rewritten against the actual server contract
+        // (`tui_gateway/methods_session_interrupt.py::_correction_method`), because
+        // "/steer doesn't steer" was true in the common case:
+        //  * An IDLE session answers {"status":"rejected"} BY DESIGN — the documented
+        //    client behaviour is then to send the text as a normal prompt ("'rejected'
+        //    makes the client queue it as a normal next prompt"). We warned and DROPPED
+        //    the user's words instead.
+        //  * 4010 means this agent has no steer capability at all. The old ack claimed
+        //    "Steer queued — no active turn; it'll apply on your next message", which
+        //    was never true: nothing had been queued.
+        //  * A mid-turn steer is delivered as a new user row after the newest tool
+        //    result (`agent_runtime_helpers`), and when the turn produces no further
+        //    tool batch the agent requeues it so it lands as a normal follow-up
+        //    message. So the server never loses it — but promising "next tool call"
+        //    when the turn makes none overstates what happened.
+        val busyNow = uiState.isStreaming ||
+            uiState.messages.any { it.role == "assistant" && it.isStreaming }
+        if (!busyNow) {
+            addCommandAck("⚠️ Nothing running to steer — sending it as a normal message.")
+            submitPrompt(text)
+            return
+        }
+        addCommandAck("⏳ Steering into this turn (lands at the next tool boundary)…")
         viewModelScope.launch {
             try {
                 wsConnection.connect()
                 val r = rpcClient.sessionSteer(sessionId, text)
-                val status = r["status"]?.jsonPrimitive?.contentOrNull ?: "queued"
-                if (status == "queued") {
-                    addCommandAck("✓ Steered for next tool call: $text")
-                } else {
-                    addCommandAck("⚠️ Steer rejected: $text")
+                val status = r["status"]?.jsonPrimitive?.contentOrNull ?: ""
+                when (status) {
+                    "queued" -> addCommandAck("✓ Steered into this turn: $text")
+                    // The turn ended between the local check and the RPC — take the
+                    // same documented fallback rather than dropping the text.
+                    "rejected" -> {
+                        addCommandAck("⚠️ Turn finished before it could be steered — sending as a message instead.")
+                        submitPrompt(text)
+                    }
+                    else -> addCommandAck("⚠️ Steer not accepted (status=$status): $text")
                 }
             } catch (e: JsonRpcException) {
                 if (e.code == 4010) {
-                    addCommandAck("Steer queued — no active turn; it'll apply on your next message: $text")
+                    addCommandAck(
+                        "⚠️ This agent cannot be steered mid-turn. Use /queue to run it after this turn: $text",
+                    )
                 } else {
                     addCommandAck("⚠️ Command failed: ${e.message}")
                 }
@@ -955,8 +1004,12 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
         viewModelScope.launch {
             try {
                 wsConnection.connect()
-                val newSid = rpcClient.createSession()
-                DebugLog.log("RPC", "DashboardChat", "/new → session.create sid=$newSid")
+                // v0.1.901: navigate to the durable key for the same reason as above.
+                val (_, durableNew) = rpcClient.createSessionWithKey()
+                val newSid = durableNew ?: rpcClient.createSession()
+                DebugLog.log("RPC", "DashboardChat",
+                    "/new → session.create durable=$newSid" +
+                    if (durableNew == null) " (no durable key — using live sid)" else "")
                 resetTargetSession = newSid
             } catch (e: Exception) {
                 addCommandAck("⚠️ New session failed: ${e.message}")
@@ -970,12 +1023,21 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             addCommandAck("⚠️ /queue needs some text to queue.")
             return
         }
-        addCommandAck("⏳ Queuing for next turn…")
+        // v0.1.901: this used to claim "Queuing for next turn…" before it knew, and
+        // then submit WITHOUT the queue flag — so with the server's default
+        // display.busy_input_mode=interrupt the text redirected/interrupted the LIVE
+        // turn instead of waiting for the next one. Two fixes: say only what is known
+        // at that instant, and set queued=true so a /queue can never become a live
+        // correction. Idle sessions are unaffected: the busy handler no-ops and the
+        // prompt runs immediately, which is what the ack now says.
+        val busyNow = uiState.isStreaming ||
+            uiState.messages.any { it.role == "assistant" && it.isStreaming }
+        addCommandAck(if (busyNow) "⏳ Queuing for after this turn…" else "⏳ Nothing running — sending now…")
         viewModelScope.launch {
             try {
                 wsConnection.connect()
-                rpcClient.promptSubmit(sessionId, text)
-                addCommandAck(if (uiState.isStreaming) "✓ Queued for next turn: $text" else "✓ Sent: $text")
+                rpcClient.promptSubmit(sessionId, text, queued = true)
+                addCommandAck(if (busyNow) "✓ Queued to run after this turn: $text" else "✓ Sent: $text")
             } catch (e: Exception) {
                 addCommandAck("⚠️ Command failed: ${e.message}")
             }

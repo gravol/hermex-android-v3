@@ -61,6 +61,24 @@ object NotificationHelper {
     private fun turnNotificationId(sessionKey: String): Int =
         2000 + ((sessionKey.hashCode() and 0x7fffffff) % 9000)
 
+    // v0.1.901: cross-path duplicate guard. SharedPreferences, not memory — the ntfy
+    // delivery can run in a freshly started process, so in-memory state would be gone.
+    private const val GUARD_PREFS = "turn_notice_guard"
+    private const val GUARD_WINDOW_MS = 20_000L
+
+    /** True when this exact preview was already posted for this session moments ago. */
+    private fun isDuplicateTurnNotice(context: Context, sessionKey: String, text: String): Boolean {
+        val sp = context.getSharedPreferences(GUARD_PREFS, Context.MODE_PRIVATE)
+        val key = "n_" + sessionKey
+        val now = System.currentTimeMillis()
+        val hash = text.hashCode()
+        val prevTs = sp.getLong(key, 0L)
+        val prevHash = sp.getInt(key + "_h", 0)
+        if (now - prevTs < GUARD_WINDOW_MS && prevHash == hash) return true
+        sp.edit().putLong(key, now).putInt(key + "_h", hash).apply()
+        return false
+    }
+
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(
@@ -181,6 +199,18 @@ object NotificationHelper {
         ensureChannels(context)
         val title = sessionTitle.ifBlank { "Hermes" }
         val text = preview.take(200).ifBlank { "Turn finished" }
+        // v0.1.901: one completed turn can reach this function twice — the app's own
+        // completion path, and the ntfy rail (`postNtfyMessage` delegates here for
+        // hermex://session/ clicks). Jeff's shade showed both: two cards for the same
+        // answer, because the two paths addressed the session by different ids (live sid
+        // vs durable key). With the durable-key fix they share an id, but a second
+        // notify() still re-alerts and reshuffles the shade. Same session + same preview
+        // inside a short window is the same turn: post once, log the suppression.
+        if (isDuplicateTurnNotice(context, sessionKey, text)) {
+            DebugLog.log("NOTIF", "Notify",
+                "duplicate turn notice suppressed for $sessionKey (same preview within guard window)")
+            return
+        }
         val notification = NotificationCompat.Builder(context, if (watching) CHANNEL_TURNS_QUIET else CHANNEL_ALERTS)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
@@ -343,7 +373,12 @@ object NotificationHelper {
         val sessionId = link?.takeIf { it.startsWith("hermex://session/") }
             ?.removePrefix("hermex://session/")
         if (sessionId != null) {
-            postTurnFinished(context, sessionId, title, body.ifBlank { "Turn finished" })
+            // v0.1.901: the published title is "Turn finished | <chat title>". Passing it
+            // through as a SESSION title made this card read differently from the app's
+            // own completion card for the same turn — one of the two visible symptoms of
+            // the duplicate. Strip the prefix so both paths describe the chat.
+            val chatTitle = title.substringAfter(" | ").ifBlank { "Hermes" }
+            postTurnFinished(context, sessionId, chatTitle, body.ifBlank { "Turn finished" })
             return
         }
         val text = body.take(400).ifBlank { title }

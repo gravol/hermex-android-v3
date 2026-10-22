@@ -777,13 +777,38 @@ class JsonRpcClient(
         val status: String? = null,
     )
 
-    suspend fun sessionList(): List<SessionInfo> {
-        val result: SessionListResult = request("session.list")
+    /**
+     * v0.1.901: `limit` is explicit. Omitting it means the SERVER default — 200 rich
+     * rows, measured at 72.6 KB against a 1,227-session state.db, and silently blind
+     * to everything older. Measured on the live gateway: limit=25 -> 8.7 KB,
+     * limit=200 -> 72.6 KB, limit=500 -> 184 KB. Callers choose their tier;
+     * SessionsViewModel starts at 25 and raises only when the user asks.
+     */
+    suspend fun sessionList(limit: Int = 25): List<SessionInfo> {
+        val result: SessionListResult = request("session.list", mapOf("limit" to limit))
         return result.sessions
     }
 
     /** Create a new session. Returns the live session id (usable with session.resume). */
-    suspend fun createSession(model: String? = null, reasoningEffort: String? = null): String {
+    suspend fun createSession(model: String? = null, reasoningEffort: String? = null): String =
+        createSessionWithKey(model, reasoningEffort).first
+
+    /**
+     * v0.1.901: create a session and keep BOTH ids it returns.
+     * `session.create` answers with a live sid (in-memory routing key, reaped ~20 s
+     * after the creating socket closes) AND `stored_session_id`, the durable state.db
+     * key. Anything that outlives this socket — opening a chat, posting a
+     * notification, a hermex:// deep link, a Reply action — must use the durable
+     * key; only in-RPC calls while attached may use the live one. The old
+     * createSession() threw the durable key away, which made a freshly created chat
+     * an unresolvable id the moment its socket went away.
+     *
+     * @return (liveSid, durableKeyOrNull) — durableKey is null only if a server omits it.
+     */
+    suspend fun createSessionWithKey(
+        model: String? = null,
+        reasoningEffort: String? = null,
+    ): Pair<String, String?> {
         DebugLog.log("RPC", "JsonRpc", "session.create (model=$model effort=$reasoningEffort)")
         val params = mutableMapOf<String, Any>("source" to "api")
         if (!model.isNullOrBlank()) params["model"] = model
@@ -792,8 +817,13 @@ class JsonRpcClient(
             "session.create",
             params,
         )
-        return result.session_id
+        val live = result.session_id
             ?: throw JsonRpcException(-1, "session.create returned no session_id")
+        if (result.stored_session_id.isNullOrBlank()) {
+            DebugLog.log("ERROR", "JsonRpc",
+                "session.create returned NO stored_session_id — caller must fall back to the live sid")
+        }
+        return live to result.stored_session_id
     }
 
     @Serializable
@@ -954,8 +984,24 @@ class JsonRpcClient(
         return result
     }
 
-    suspend fun promptSubmit(sessionId: String, text: String): PromptSubmitResult =
-        request("prompt.submit", mapOf("session_id" to sessionId, "text" to text), timeoutMs = 120_000)
+    /**
+     * `queued = true` sets the gateway's explicit queue flag. Without it a mid-turn
+     * submit follows `display.busy_input_mode` — which is `interrupt` on this server
+     * (config.yaml:252), meaning the text REDIRECTS or interrupts the live turn
+     * instead of waiting. `_handle_busy_submit` documents the flag exactly that way:
+     * "queued=True (client queue drain) forces queue mode: a 'run after' message must
+     * NEVER become a live correction". Harmless when the session is idle: the busy
+     * handler returns None and the prompt runs normally.
+     */
+    suspend fun promptSubmit(
+        sessionId: String,
+        text: String,
+        queued: Boolean = false,
+    ): PromptSubmitResult {
+        val params = mutableMapOf<String, Any>("session_id" to sessionId, "text" to text)
+        if (queued) params["queued"] = true
+        return request("prompt.submit", params, timeoutMs = 120_000)
+    }
 
     suspend fun sessionInterrupt(sessionId: String): JsonObject =
         request("session.interrupt", mapOf("session_id" to sessionId))

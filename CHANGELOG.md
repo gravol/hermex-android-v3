@@ -1,3 +1,65 @@
+## v0.1.901 (vc47) — 2026-10-22 — the drawer could not see 1,027 of 1,227 sessions; `/queue` interrupted instead of queueing
+
+- **The session list was silently truncated at 200 and cost 73 KB per refetch.** `JsonRpcClient.sessionList()` sent
+  no `limit`, so the gateway default applied (`methods_session.py`: `int(params.get("limit", 200))`, after fetching
+  `max(limit*2, 200)` rows). Measured against the live server on a 1,227-session db: **no limit → 200 rows / 72.6 KB**,
+  `limit=25` → 8.7 KB, `limit=500` → 184 KB. Two consequences: every `sessions.changed` refetch (our own v0.1.886 note
+  logs those arriving in pairs every 2–10 s) moved ~73 KB, and because the drawer's filter matches only *loaded* rows,
+  **1,027 older sessions were invisible and unsearchable** with nothing on screen saying so.
+- **Fix (port of Jeff's brother Mike's blackie5 + blackie10 escape hatch, commits `565cf3c`/`d8f1a06`).** Default
+  `session.list` limit is now an explicit **25**; the drawer footer "Load older conversations" raises it one tier per tap
+  (25 → 200 → 2000) and the raised limit sticks for the ViewModel's life so an auto-reload never shrinks the list back
+  out from under the user. The footer hides itself on **proof**, not a guess: a page shorter than the requested limit
+  means there is nothing older (`SessionsUiState.fullListLoaded`, set from `rpcSessions.size < asked`). Mike's version
+  jumps straight to 500, which for this db still misses the oldest 727 — hence tiers. (`JsonRpcClient.kt`,
+  `SessionsViewModel.kt`, `WebuiMenuDrawer.kt`.)
+- **A freshly created session was addressed by an id that dies in ~20 s.** `session.create` returns both a live sid
+  (in-memory routing key, reaped ~20 s after the creating socket closes — `ws_orphan_reap`) and `stored_session_id`,
+  the durable state.db key. We parsed `stored_session_id` and threw it away, then opened the new chat with the live sid
+  — so its notification, `hermex://session/<id>` deep link and Reply action all keyed off an unresolvable id, and the
+  self-heal path at `DashboardChatViewModel:554` literally logged "adopt the new DB key" while adopting a live sid.
+  Every other identity path in this app already keeps the DB key (liveSid is debug-only), which is why this hid.
+  **Fix (Mike's blackie9, commit `ae40872`):** `createSessionWithKey()` returns `(liveSid, durableKey)`; the drawer,
+  `/new`, and the self-heal adopt the durable key, falling back to the live sid only if a server omits it.
+  (`JsonRpcClient.kt`, `SessionsViewModel.kt`, `DashboardChatViewModel.kt`.)
+- **`/queue <text>` did not queue.** It called `prompt.submit` without the gateway's queue flag, and this server runs
+  `display.busy_input_mode: interrupt` (config.yaml:252) — `_handle_busy_submit` then **redirects or interrupts the live
+  turn** rather than waiting. The server has an explicit flag for exactly this case ("queued=True … a 'run after' message
+  must NEVER become a live correction"), and we never set it. The ack was also dishonest before it knew: it printed
+  "⏳ Queuing for next turn…" unconditionally. Now `promptSubmit(…, queued = true)` and the wording follows what is
+  actually true at that instant ("Queuing for after this turn…" vs "Nothing running — sending now…"). Idle sessions
+  behave as before: the busy handler no-ops and the prompt runs immediately. (`JsonRpcClient.kt`,
+  `DashboardChatViewModel.kt`.)
+- **`/steer` dropped your text whenever nothing was running.** `session.steer` answers `{"status":"rejected"}` for an
+  idle session **by design** — `_correction_method` documents it: *"An idle agent accepts steer() but only the next turn
+  drains it… 'rejected' makes the client queue it as a normal next prompt."* We printed "⚠️ Steer rejected" and discarded
+  the words. The 4010 branch lied twice: 4010 means *this agent has no steer capability*, while our ack said "Steer
+  queued — no active turn; it'll apply on your next message" (nothing had been queued). And the pre-flight ack promised
+  steering before anything was known. **Fix:** idle → take the documented fallback (`submitPrompt`); mid-turn → keep the
+  RPC, word the ack as what actually happens ("lands at the next tool boundary"), handle the `rejected` race with the same
+  fallback, and state 4010 honestly with `/queue` as the alternative. Server-side behaviour confirmed by reading
+  `agent_runtime_helpers`: an undelivered steer is requeued and delivered later as a normal user row, so nothing is lost
+  server-side — the loss was ours. (`DashboardChatViewModel.kt`.)
+- **Two notifications for one finished turn.** Jeff's shade showed *"Turn finished | Check Strata Engine Cache Graph
+  Setup"* and *"Check Strata Engine Cache Graph Setup"* — same answer, two cards. Cause: a completed turn reaches
+  `NotificationHelper.postTurnFinished` from **two paths** — the app's own completion handlers, and the ntfy rail
+  (`postNtfyMessage` delegates any `hermex://session/<key>` click straight to `postTurnFinished`). They addressed the
+  session by **different ids** (live sid vs durable key), so they landed in different notification ids instead of
+  replacing each other; the differing titles came from the server's `"Turn finished | <chat title>"` being used as a
+  *session* title. Fix is three-part: the durable-key work above makes both paths address one session; the ntfy path now
+  strips that prefix and titles the card with the chat; and `isDuplicateTurnNotice()` suppresses the same preview for the
+  same session inside a 20 s window, recorded in **SharedPreferences** because ntfy delivery can run in a freshly started
+  process. Suppressions are logged, so if the window ever hides a real second turn we will see it rather than guess.
+  (`NotificationHelper.kt`.)
+- **Slash commands paid for a guaranteed failure.** `slash.exec` / `command.dispatch` resolve sessions by live SID only,
+  but when `liveSid` was blank the call sent the DB key — a deterministic 4001 — and only then did our own 4001 handler
+  resume and retry. Now `execSlashWithFallbacks` resumes first when there is no live sid and logs the preflight; the
+  4001 self-heal stays as the recovery path for genuine reaping. (`DashboardChatViewModel.kt`.)
+- **Not taken from the blackie batch:** the TurnWatcher changes (no polling watcher exists in v3 — pings come from the
+  completion paths + ntfy push), and deleting `WsKeepaliveService` (still started on WS connect here; a separate call,
+  made harder by `NtfySubscriptionService` already being an ongoing-notification FGS). Audit with measurements:
+  vault `HermexAndroid/blackie-handoff-audit-vs-v3-2026-10-21.md`.
+
 ## v0.1.900 (vc46) — 2026-10-21 — code-panel copy button copied the whole message, not the block
 
 - **Copy button on a code panel handed you the entire message markdown.** `CopyableCodeBlock`/`CopyableCodeFence`

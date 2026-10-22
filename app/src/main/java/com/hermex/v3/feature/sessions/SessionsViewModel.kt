@@ -22,6 +22,12 @@ import kotlinx.coroutines.launch
 data class SessionsUiState(
     val sessions: List<SessionSummary> = emptyList(),
     val isLoading: Boolean = false,
+    // v0.1.901: true once a fetch came back SHORTER than the limit we asked for —
+    // that is proof there is nothing older to get, not a guess. Gates the drawer's
+    // "Load older conversations" footer. Default loads are 25 rows (~9 KB) because
+    // session.list is refetched on every sessions.changed; the full list costs
+    // hundreds of KB and is only fetched when the user asks for it.
+    val fullListLoaded: Boolean = false,
     val isCreating: Boolean = false,
     val error: String? = null,
     val deleting: Boolean = false,
@@ -95,6 +101,24 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    // v0.1.901: session.list tiers. With no limit param the server default applied —
+    // 200 rich rows / 72.6 KB per fetch against a 1,227-session db, refetched on every
+    // sessions.changed — and the drawer's filter only sees loaded rows, so 1,027
+    // sessions were invisible AND unsearchable. Now: cheap by default, each explicit
+    // tap one tier bigger, and the raised limit sticks for this ViewModel's life so an
+    // auto-reload never shrinks the list back out from under the user.
+    private var listLimit = LIST_TIER_START
+    private val listTiers = intArrayOf(25, 200, 2000)
+
+    /** "Load older conversations" — user-invoked; raises the limit exactly one tier. */
+    fun loadMoreSessions() {
+        val next = listTiers.firstOrNull { it > listLimit } ?: return
+        DebugLog.log("INFO", "SessionsVM",
+            "loadMoreSessions: raising session.list limit $listLimit -> $next")
+        listLimit = next
+        loadSessions()
+    }
+
     fun loadSessions() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
@@ -119,10 +143,21 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                 // desktop composer) to the new session.
                 val modelPick = settingsRepo.modelPick.first().ifBlank { null }
                 val reasoningPick = settingsRepo.reasoningPick.first().ifBlank { null }
-                val sid = rpc.createSession(model = modelPick, reasoningEffort = reasoningPick)
+                val (liveSid, durableKey) = rpc.createSessionWithKey(
+                    model = modelPick, reasoningEffort = reasoningPick,
+                )
+                // v0.1.901: open the new chat by its DURABLE key. The live sid is a
+                // routing key the gateway reaps ~20 s after this socket goes away, and
+                // the row exists in state.db from the moment it is created — so the
+                // drawer list already shows it, and every notification / deep link /
+                // Reply built from this id resolves. (Mike's blackie9 fix; same bug
+                // class we had already eliminated everywhere else.)
+                val openKey = durableKey ?: liveSid
                 DebugLog.log("INFO", "SessionsVM",
-                    "session.create → $sid (model=$modelPick effort=$reasoningPick)")
-                onDone(sid)
+                    "session.create → live=$liveSid durable=$openKey" +
+                    if (durableKey == null) " (NO durable key — falling back to live)" else "" +
+                    " (model=$modelPick effort=$reasoningPick)")
+                onDone(openKey)
             } catch (e: Exception) {
                 Log.e("Hermex", "SessionsViewModel: createSession failed", e)
                 DebugLog.log("ERROR", "SessionsVM", "session.create failed: ${e.message}")
@@ -251,8 +286,14 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
      */
     private suspend fun applySessionList(client: JsonRpcClient) {
         try {
-            val rpcSessions = client.sessionList()
-            DebugLog.log("INFO", "SessionsVM", "session.list → ${rpcSessions.size} sessions")
+            val asked = listLimit
+            val rpcSessions = client.sessionList(limit = asked)
+            // A short page means the server has nothing older — that is proof, so the
+            // footer can hide itself. A full page means there is more to ask for.
+            val atEnd = rpcSessions.size < asked
+            DebugLog.log("INFO", "SessionsVM",
+                "session.list(limit=$asked) → ${rpcSessions.size} sessions" +
+                if (atEnd) " (short page: no older rows exist)" else " (page full: older rows remain)")
 
             val mapped = rpcSessions.map { it.toSessionSummary() }
             val filtered = mapped.filter { it.messageCount > 0 }
@@ -263,6 +304,7 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 sessions = filtered,
+                fullListLoaded = atEnd,
                 error = null,
             )
         } catch (e: Exception) {
@@ -295,5 +337,6 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
     }
 
     companion object {
+        private const val LIST_TIER_START = 25
     }
 }
