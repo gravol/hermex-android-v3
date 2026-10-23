@@ -13,8 +13,8 @@ android {
         applicationId = "com.hermex.v3"
         minSdk = 34
         targetSdk = 34
-        versionCode = 49
-        versionName = "0.5.0"
+        versionCode = 50
+        versionName = "0.5.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

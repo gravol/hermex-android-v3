@@ -1,3 +1,29 @@
+## v0.5.1 (vc50) — 2026-10-23 — Insights was showing 3% of the prompt volume
+
+- **Reported by Jeff: "it seems weird that there's insane input vs output?"** It was not a bad ratio; it was a missing
+  source. The panel totals `session.list` rows, and those rows carry the gateway's `sessions` counters, which hold
+  **main-agent-loop calls only** and **uncached prompt tokens only** (`agent/usage_pricing.py` normalizes providers that
+  way on purpose). Measured over 30 days on a real store: it showed **58.9M in / 14.7M out** while the model was actually
+  sent **2.14B prompt tokens** (2.08B of it cached) across **15,890 calls**, plus **1,572 more calls / 9.8M input (+13%)**
+  of auxiliary work — memory review, context compaction, titling, vision — that never appears in a session row at all. True
+  prompt:output is ~146:1, which is normal for replaying a ~107k-token context every turn; the panel was understating input
+  about 35×, not inflating it.
+- **Fix is on the server, and this app half reads it.** `insights.get` used to return only `{days, sessions, messages}`;
+  it now also returns a `usage` rollup for one window (totals, per-model, per-task), computed from
+  `session_model_usage` — the same accounting `/insights` uses — so a total can never disagree with its own breakdowns. The
+  phone asks for DAY=1 / WEEK=7 / MONTH=30 instead of pulling up to 2,000 rows and summing them on-device.
+- **What the panel shows now:** prompt volume including cached tokens, with uncached and cached split out underneath; output
+  with thinking tokens named instead of added (they are already inside `completion_tokens`, so totalling them twice would
+  invent spend); API calls and sessions; estimated cost when there is one; and a **BEHIND THE SCENES** section listing the
+  auxiliary work by plain name ("memory review", "context compaction", "titling"). Token formatting gained a billions branch
+  because "2137.3M" reads like a bug.
+- **An unlabelled number is a wrong number.** Against a gateway that predates the rollup the panel keeps its old
+  client-side totals but says so in amber: "Approximate — this gateway reports no usage rollup. These are main-agent calls
+  and uncached prompt tokens only." A missing capability must never render as a zero.
+- **Pinned by JVM tests** (`InsightsUsageRenderTest`, 8 new, on top of the existing 9): prompt counts cache, input does not;
+  auxiliary tasks are listed heaviest-first with human names; reasoning is annotated not added; unknown task ids fall
+  through unchanged; cost appears only when non-zero; window→period mapping is 1/7/30.
+
 ## v0.5.0 (vc49) — 2026-10-23 — milestone: what Hermex does on your phone today
 
 **No new code in this release.** v0.5.0 renumbers v0.1.902 — the build that has been the daily driver since Oct 22 — so installing it changes nothing except the number in Settings. The `0.1.NNN` counter is retired: fixes from here go out as **0.5.1, 0.5.2, …**. Below is what the app actually does, rather than a list of fixes.
