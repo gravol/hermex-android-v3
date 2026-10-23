@@ -791,7 +791,7 @@ private fun AppearancePreview(
             ) {
                 Surface(
                     color = userBubble,
-                    shape = RoundedCornerShape(14.dp, 14.dp, 4.dp, 14.dp),
+                    shape = RoundedCornerShape(15.dp),
                     border = BorderStroke(1.dp, accent.copy(alpha = 0.4f)),
                 ) {
                     Text(
@@ -897,7 +897,7 @@ private fun AppearancePreview(
             Spacer(Modifier.height(8.dp))
 
             // Assistant reply (flat, full-width)
-            Surface(color = assistantBubble, shape = RoundedCornerShape(14.dp)) {
+            Surface(color = assistantBubble, shape = RoundedCornerShape(15.dp)) {
                 Text(
                     text = "Morning! Sunny 16°C today — no jobs logged yet.",
                     style = textStyle,
