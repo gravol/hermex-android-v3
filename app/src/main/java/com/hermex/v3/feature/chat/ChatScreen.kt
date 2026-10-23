@@ -977,7 +977,7 @@ fun ChatScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 8.dp, vertical = 2.dp),
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(15.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                         ) {
@@ -1061,7 +1061,7 @@ fun ChatScreen(
                         // all inside one capsule (WebUI-style).
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(28.dp),
+                            shape = RoundedCornerShape(7.dp),
                             color = Color(0xFF1A1A1A),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
                         ) {
@@ -1083,7 +1083,7 @@ fun ChatScreen(
                                         .onFocusChanged { composerFocused = it.isFocused },
                                     maxLines = 4,
                                     enabled = true,
-                                    shape = RoundedCornerShape(28.dp),
+                                    shape = RoundedCornerShape(7.dp),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = Color.Transparent,
                                         unfocusedBorderColor = Color.Transparent,
@@ -1231,7 +1231,7 @@ fun ChatScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(15.dp),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
                 ) {
                     Row(
@@ -1493,7 +1493,7 @@ fun ChatScreen(
                 modifier = Modifier
                     .widthIn(min = 300.dp, max = 460.dp)
                     .padding(8.dp),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(15.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 ),
@@ -1639,7 +1639,7 @@ private fun ThinkingScrollBox(text: String) {
             .padding(horizontal = 12.dp, vertical = 4.dp),
         // v0.1.95: thinking box is a themeable extra surface
         color = LocalUiSurfaces.current.thinkingBox,
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(15.dp),
     ) {
         Column {
             Row(
@@ -1700,7 +1700,7 @@ private fun LiveThinkingTicker(text: String) {
         horizontalArrangement = Arrangement.Start,
     ) {
         Surface(
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(15.dp),
             // v0.1.95: live thinking pill shares the themeable thinking-box color
             color = LocalUiSurfaces.current.thinkingBox,
             modifier = Modifier.widthIn(max = 340.dp),
@@ -1750,23 +1750,10 @@ private fun MessageBubble(
     } else {
         MaterialTheme.colorScheme.surfaceVariant
     }
-    // Telegram-style corner radii: user = top-left/bottom-left/bottom-right rounded,
-    // top-right sharp; assistant = top-right/bottom-right/bottom-left rounded, top-left sharp
-    val bubbleShape = if (isUser) {
-        RoundedCornerShape(
-            topStart = 18.dp,
-            topEnd = 4.dp,
-            bottomStart = 18.dp,
-            bottomEnd = 18.dp,
-        )
-    } else {
-        RoundedCornerShape(
-            topStart = 4.dp,
-            topEnd = 18.dp,
-            bottomStart = 18.dp,
-            bottomEnd = 18.dp,
-        )
-    }
+    // House style: uniform corners on every chat surface. The Telegram-style 4dp tail
+    // corner made bubbles read as broken next to uniform panels, and the asymmetric
+    // radius made left/right alignment ambiguous. Both roles use the panel radius.
+    val bubbleShape = RoundedCornerShape(15.dp)
 
     Column(
         modifier = Modifier
@@ -2399,7 +2386,7 @@ private fun LiveActivityPanel(
     val visibleToolCount = if (showAllTools) toolCalls.size else kotlin.math.min(maxVisibleTools, toolCalls.size)
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
+        shape = RoundedCornerShape(15.dp),
         // v0.1.95: live activity panel is a themeable extra surface (tool cards)
         color = LocalUiSurfaces.current.toolCard,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
@@ -2658,7 +2645,7 @@ private fun ToolScrollBox(toolCalls: List<UiToolCall>) {
             .padding(horizontal = 12.dp, vertical = 4.dp),
         // v0.1.95: tools box is a themeable extra surface
         color = LocalUiSurfaces.current.toolCard,
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(15.dp),
     ) {
         Column {
             Row(
@@ -2984,7 +2971,7 @@ private fun TasksCard(
     val active = todos.firstOrNull { it.isActive }
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(15.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
     ) {
@@ -3183,7 +3170,7 @@ private fun SafeCodeContent(code: String, langTag: String?, highlight: Boolean) 
         style = style,
         modifier = Modifier
             .fillMaxWidth()
-            .background(LocalUiSurfaces.current.codeBlock)
+            .background(LocalUiSurfaces.current.codeBlock, RoundedCornerShape(bottomStart = 15.dp, bottomEnd = 15.dp))
             .padding(horizontal = 10.dp, vertical = 8.dp),
     )
 }
@@ -3195,7 +3182,7 @@ private fun CodeBlockShell(code: String, language: String, content: @Composable 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
+                .clip(RoundedCornerShape(topStart = 15.dp, topEnd = 15.dp))
                 // v0.1.95: code block header is a themeable extra surface
                 .background(LocalUiSurfaces.current.codeBlock)
                 .padding(start = 10.dp, end = 4.dp),
@@ -3790,7 +3777,7 @@ private fun InlineClarifyCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(15.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
     ) {
