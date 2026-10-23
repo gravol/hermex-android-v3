@@ -1,3 +1,15 @@
+## v0.5.0 (vc49) — 2026-10-23 — milestone: what Hermex does on your phone today
+
+**No new code in this release.** v0.5.0 renumbers v0.1.902 — the build that has been the daily driver since Oct 22 — so installing it changes nothing except the number in Settings. The `0.1.NNN` counter is retired: fixes from here go out as **0.5.1, 0.5.2, …**. Below is what the app actually does, rather than a list of fixes.
+
+**Chat, one-to-one with the Hermes CLI/WebUI.** Sessions stream token-by-token with the model's thinking shown as it arrives and tool calls rendered as live cards; a card that can never receive its completion closes itself instead of hanging (v0.1.889). Copy takes the code block you pressed, not the whole message (v0.1.900). Images attach from the picker (v0.1.899). Slash commands are checked before they leave the phone: `/queue` queues behind the running turn, `/steer` redirects mid-turn (v0.1.901).
+
+**Every session, honestly reported.** The session drawer sees the whole history, not the first 200 rows (v0.1.901). Insights totals DAY/WEEK/MONTH from its own snapshot with real states — loading, "no conversations loaded" with a retry, "no usage in this window", an amber note when the snapshot stops short of history — and the aggregation is pure code pinned by nine timezone-aware JVM tests (v0.1.902).
+
+**Replies from the lock screen.** A finished turn posts a notification carrying a Reply action, so you answer without opening the app; duplicate notifications across delivery paths are guarded in persistent storage, not memory (v0.1.901). Push arrives over the native path or ntfy, and both Connection and Push Delivery screens say which account's values you're looking at for a second user (v0.1.897).
+
+**It comes back on its own.** Reconnect checks are generation-scoped, with a 15 s liveness watchdog, so the app never reports Connected on a dead socket (v0.1.890); a reaped session recovers its history through capped exponential backoff instead of showing an empty chat or a red panel; opening a session after a gateway restart self-heals. Secrets are fail-closed encrypted and opted out of cloud backup (v0.1.891/892). The ANR storm caused by our own instrumentation is gone (v0.1.897).
+
 ## v0.1.902 (vc48) — 2026-10-22 — Insights was totalling the drawer's page, so MONTH saw two days
 
 - **Reported by Jeff: "insights are broken again, nothing is populated when I click the section."** Ruled the server out first: 
