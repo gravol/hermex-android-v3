@@ -92,17 +92,31 @@ jobs:
           git tag -a "$TAG" -m "Release ${{ steps.version.outputs.versionName }} (code ${{ steps.version.outputs.versionCode }})"
           git push origin "$TAG"
 
+      - name: Build release notes from CHANGELOG.md
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          VER: ${{ steps.version.outputs.versionName }}
+          CODE: ${{ steps.version.outputs.versionCode }}
+        run: |
+          mkdir -p .github
+          awk -v head="## v$VER (" '
+            index($0, head)==1 { inside=1; print; next }
+            inside && /^## /   { inside=0 }
+            inside             { print }
+          ' CHANGELOG.md > .github/release-notes.md
+          if [ -s .github/release-notes.md ]; then
+            echo "Release body = CHANGELOG.md section for v$VER ($(wc -l < .github/release-notes.md) lines)"
+          else
+            printf '## HermexAndroid v%s\n\n**Version code:** %s\n\nAuto-built and tagged on push to main.\n' "$VER" "$CODE" > .github/release-notes.md
+            echo "No CHANGELOG section for v$VER — using boilerplate"
+          fi
+
       - name: Create GitHub Release
         if: steps.check_tag.outputs.exists == 'false'
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ steps.version.outputs.tag }}
           name: "v${{ steps.version.outputs.versionName }}"
-          body: |
-            ## HermexAndroid v${{ steps.version.outputs.versionName }}
-
-            **Version code:** ${{ steps.version.outputs.versionCode }}
-
-            Auto-built and tagged on push to main.
+          bodyFile: .github/release-notes.md
           artifacts: ${{ steps.apk.outputs.path }}
           token: ${{ secrets.GITHUB_TOKEN }}
