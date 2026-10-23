@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.hermex.v3.feature.settings.SettingsRepository
 import com.hermex.v3.di.AppModule
 import com.hermex.core.network.DebugLog
+import com.hermex.core.network.InsightsUsage
 import com.hermex.core.network.JsonRpcClient
 import com.hermex.core.network.RpcNotification
 import com.hermex.core.network.SessionSummary
@@ -38,6 +39,23 @@ data class InsightsSnapshot(
     val error: String? = null,
 )
 
+/**
+ * v0.5.1: one window's server-computed usage rollup (`insights.get`). Keyed by period in days
+ * (1/7/30) because the panel's DAY/WEEK/MONTH selector asks for exactly those windows.
+ *
+ * [usage] == null is a capability signal, not a zero: gateways before the rollup answer with only
+ * {days, sessions, messages}, and [unavailableReason] carries why a newer gateway could not answer.
+ * The panel then says it is approximating from session rows instead of passing off main-agent-only
+ * counters as the whole picture.
+ */
+data class WindowUsage(
+    val usage: InsightsUsage? = null,
+    val unavailableReason: String? = null,
+    val isLoading: Boolean = false,
+    val fetchedAt: Long = 0L,
+    val error: String? = null,
+)
+
 data class SessionsUiState(
     val sessions: List<SessionSummary> = emptyList(),
     val isLoading: Boolean = false,
@@ -51,6 +69,8 @@ data class SessionsUiState(
     // from `sessions` on purpose: the drawer page is small and refetched on every
     // sessions.changed, while an insights figure has to cover the whole window it claims.
     val insights: InsightsSnapshot = InsightsSnapshot(),
+    // v0.5.1: per-window server usage rollup, keyed by period in days — see [WindowUsage].
+    val windowUsage: Map<Int, WindowUsage> = emptyMap(),
     val isCreating: Boolean = false,
     val error: String? = null,
     val deleting: Boolean = false,
@@ -214,6 +234,75 @@ class SessionsViewModel(application: Application) : AndroidViewModel(application
                 )
             } finally {
                 insightsInFlight = false
+            }
+        }
+    }
+
+    /**
+     * v0.5.1: ask the gateway for one window's usage rollup (`insights.get`, days = 1/7/30).
+     *
+     * This is the honest path. Summing `session.list` rows on the phone can only ever see the
+     * `sessions` counters: main-agent-loop calls, uncached prompt tokens. Measured against a real
+     * store over 30 days that hid 1,572 API calls / 9.8M input tokens (+13%) of auxiliary work and
+     * every one of 2.47B cached prompt tokens — which is what made the panel's in/out ratio look
+     * absurd. The server computes this from `session_model_usage`, so totals and breakdowns agree.
+     *
+     * A gateway without the rollup returns no `usage`; that is recorded as [WindowUsage.usage]=null
+     * with a reason, never as zeros, so the panel can say it is approximating.
+     */
+    private val usageInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+
+    fun loadWindowUsage(days: Int, force: Boolean = false) {
+        val period = days.coerceIn(1, 365)
+        if (!usageInFlight.add(period)) return
+        val current = _uiState.value.windowUsage[period]
+        if (!force && current?.usage != null &&
+            System.currentTimeMillis() - current.fetchedAt < INSIGHTS_TTL_MS
+        ) {
+            usageInFlight.remove(period)
+            DebugLog.log("INFO", "SessionsVM", "loadWindowUsage(${period}d): reusing cached rollup")
+            return
+        }
+        viewModelScope.launch {
+            fun put(w: WindowUsage) {
+                _uiState.value = _uiState.value.copy(
+                    windowUsage = _uiState.value.windowUsage + (period to w),
+                )
+            }
+            put(current?.copy(isLoading = true, error = null) ?: WindowUsage(isLoading = true))
+            val client = sharedRpc.takeIf { sharedWs.isConnected } ?: ensureShared()
+            if (client == null) {
+                DebugLog.log("ERROR", "SessionsVM", "loadWindowUsage(${period}d): no observer socket")
+                put((current ?: WindowUsage()).copy(isLoading = false, error = "connection unavailable"))
+                usageInFlight.remove(period)
+                return@launch
+            }
+            try {
+                val result = client.insightsUsage(period)
+                val usage = result.usage
+                DebugLog.log(
+                    "INFO", "SessionsVM",
+                    "insights.get(days=$period) → " + if (usage == null)
+                        "no usage rollup (${result.usageUnavailable ?: "server predates it"}); " +
+                            "legacy counts sessions=${result.sessions}"
+                    else "prompt=${usage.totals.promptTokens} in=${usage.totals.inputTokens} " +
+                        "out=${usage.totals.outputTokens} calls=${usage.totals.apiCallCount} " +
+                        "tasks=${usage.tasks.size}",
+                )
+                put(
+                    WindowUsage(
+                        usage = usage,
+                        unavailableReason = result.usageUnavailable,
+                        isLoading = false,
+                        fetchedAt = System.currentTimeMillis(),
+                    ),
+                )
+            } catch (e: Exception) {
+                Log.e("Hermex", "SessionsViewModel: usage rollup failed (${period}d)", e)
+                DebugLog.log("ERROR", "SessionsVM", "loadWindowUsage(${period}d) failed: ${e.message}")
+                put((current ?: WindowUsage()).copy(isLoading = false, error = e.message ?: "insights.get failed"))
+            } finally {
+                usageInFlight.remove(period)
             }
         }
     }

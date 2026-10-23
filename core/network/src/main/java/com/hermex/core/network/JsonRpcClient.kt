@@ -789,6 +789,20 @@ class JsonRpcClient(
         return result.sessions
     }
 
+    /**
+     * v0.5.1: token/cost rollup for one window (DAY=1, WEEK=7, MONTH=30), computed by the gateway.
+     *
+     * Prefer this over summing `session.list` rows client-side: those rows carry the `sessions`
+     * counters — main-agent-loop calls, uncached prompt tokens only — so a phone-built total hides
+     * auxiliary work (memory review, compaction, titling, vision) and the entire cached prompt
+     * volume, which is most of what the model was actually shown.
+     *
+     * `usage == null` means the gateway predates the rollup (or its store can't answer); it is a
+     * capability signal, not a zero. Show an approximation label in that case.
+     */
+    suspend fun insightsUsage(days: Int): InsightsGetResult =
+        request("insights.get", mapOf("days" to days.coerceIn(1, 365)))
+
     /** Create a new session. Returns the live session id (usable with session.resume). */
     suspend fun createSession(model: String? = null, reasoningEffort: String? = null): String =
         createSessionWithKey(model, reasoningEffort).first

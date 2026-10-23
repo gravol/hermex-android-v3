@@ -1,5 +1,6 @@
 package com.hermex.v3.feature.menu
 
+import com.hermex.core.network.InsightsUsage
 import com.hermex.core.network.SessionSummary
 import java.time.Instant
 import java.time.LocalDate
@@ -117,10 +118,91 @@ object InsightsAggregate {
         return afterSlash.substringAfterLast(':')
     }
 
-    /** Compact token formatting: 85123 → "85.1k", 1048576 → "1.0M". */
+    /** Compact token formatting: 85123 → "85.1k", 1048576 → "1.0M", 2.1e9 → "2.1B". */
     fun formatTokens(tokens: Long): String = when {
+        // v0.5.1: the billion branch is not decoration. A month of a long-context agent really does
+        // send billions once cached prompt tokens are counted (2.1B measured over 30 days), and
+        // "2137.3M" is the kind of figure that gets misread as a bug.
+        tokens >= 1_000_000_000 -> String.format(Locale.US, "%.1fB", tokens / 1_000_000_000f)
         tokens >= 1_000_000 -> String.format(Locale.US, "%.1fM", tokens / 1_000_000f)
         tokens >= 1_000 -> String.format(Locale.US, "%.1fk", tokens / 1_000f)
         else -> tokens.toString()
+    }
+
+    /** The window selector's period, in days, for the gateway-side rollup (`insights.get`). */
+    fun daysFor(window: Int): Int = when (window) {
+        DAY -> 1
+        WEEK -> 7
+        MONTH -> 30
+        else -> 30
+    }
+
+    data class UsageLine(val label: String, val value: String)
+
+    data class UsageDisplay(
+        /** One-line summary: what the model was shown vs what it produced. */
+        val headline: String,
+        val lines: List<UsageLine>,
+        /** Auxiliary work — memory review, compaction, titling, vision — that the session-row
+         *  totals never counted. */
+        val overhead: List<UsageLine>,
+        val models: List<ModelUsageRow>,
+    )
+
+    /**
+     * Turn a server [InsightsUsage] into display strings. Kept pure and separate from the composable
+     * because the whole point of this figure is honesty about what each number means: prompt volume
+     * includes cached tokens, "input" is only the cache misses, and output may contain thinking
+     * tokens. Rendering that inline invites the next reader to flatten it back into one number.
+     */
+    fun renderUsage(usage: InsightsUsage): UsageDisplay {
+        val t = usage.totals
+        val cached = t.cacheReadTokens + t.cacheWriteTokens
+        val lines = buildList {
+            add(UsageLine("Prompt (incl. cache)", formatTokens(t.promptTokens)))
+            add(UsageLine("  uncached", formatTokens(t.inputTokens)))
+            add(UsageLine("  cached", formatTokens(cached)))
+            val out = StringBuilder(formatTokens(t.outputTokens))
+            if (t.reasoningTokens > 0) out.append(" (${formatTokens(t.reasoningTokens)} thinking)")
+            add(UsageLine("Output", out.toString()))
+            add(UsageLine("API calls / sessions", "${t.apiCallCount} / ${t.sessions}"))
+            val cost = t.actualCost.takeIf { it > 0.0 } ?: t.estimatedCost.takeIf { it > 0.0 }
+            if (cost != null) add(UsageLine("Estimated cost", formatCost(cost)))
+        }
+        val overhead = usage.tasks
+            .sortedByDescending { it.inputTokens + it.outputTokens + it.cacheReadTokens }
+            .map { UsageLine(taskLabel(it.task), "${formatTokens(it.inputTokens + it.outputTokens + it.cacheReadTokens)} · ${it.apiCallCount} calls") }
+        val models = usage.models.map { m ->
+            ModelUsageRow(
+                model = modelLabel(m.model),
+                inputTokens = m.inputTokens,
+                outputTokens = m.outputTokens,
+                totalTokens = m.totalTokens,
+                sessionCount = 0,
+            )
+        }
+        return UsageDisplay(
+            headline = "${formatTokens(t.promptTokens)} prompt / ${formatTokens(t.outputTokens)} out",
+            lines = lines,
+            overhead = overhead,
+            models = models,
+        )
+    }
+
+    /** The gateway's task ids are internal names; say what the work actually is. */
+    fun taskLabel(task: String): String = when (task) {
+        "background_review" -> "memory review"
+        "compression" -> "context compaction"
+        "title_generation" -> "titling"
+        "vision" -> "image description"
+        "" -> "unlabeled"
+        else -> task.replace('_', ' ')
+    }
+
+    /** Money, at a precision that doesn't lie: sub-cent figures are real here (local routes are 0). */
+    fun formatCost(usd: Double): String = when {
+        usd >= 1.0 -> String.format(Locale.US, "$%.2f", usd)
+        usd > 0.0 -> String.format(Locale.US, "$%.4f", usd)
+        else -> "$0.00"
     }
 }

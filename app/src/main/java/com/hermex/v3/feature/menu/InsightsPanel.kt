@@ -28,6 +28,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hermex.core.network.SessionSummary
+import com.hermex.v3.feature.sessions.WindowUsage
 
 /**
  * Insights panel (v0.1.146): token-usage summary, bucketed by day / week / month and broken
@@ -61,11 +63,20 @@ fun InsightsPanel(
     loading: Boolean = false,
     truncated: Boolean = false,
     onRetry: (() -> Unit)? = null,
+    // v0.5.1: the gateway-computed rollup per window (keyed by period in days) and the hook that
+    // asks for one. The session rows above can only ever show main-agent calls and uncached prompt
+    // tokens; everything else lives in this map, or it is not knowable on the phone at all.
+    windowUsage: Map<Int, WindowUsage> = emptyMap(),
+    onWindowSelected: (Int) -> Unit = {},
 ) {
     var window by rememberSaveable { mutableIntStateOf(InsightsAggregate.DAY) }
 
     val result = remember(sessions, window) { InsightsAggregate.aggregate(sessions, window) }
-    val modelRows = result.modelRows
+    val days = InsightsAggregate.daysFor(window)
+    LaunchedEffect(days) { onWindowSelected(days) }
+    val usage = windowUsage[days]?.usage
+    val display = remember(usage) { usage?.let { InsightsAggregate.renderUsage(it) } }
+    val modelRows = display?.models ?: result.modelRows
     val grandInput = result.grandInput
     val grandOutput = result.grandOutput
     val grandTotal = result.grandTotal
@@ -139,19 +150,37 @@ fun InsightsPanel(
                     color = Color(0xFF888888),
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "${formatTokens(grandInput)} in / ${formatTokens(grandOutput)} out",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFFE8E8E8),
-                )
-                Spacer(Modifier.height(1.dp))
-                Text(
-                    text = "Total ${formatTokens(grandTotal)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                if (display != null) {
+                    // Server rollup: prompt volume includes cached tokens, which is most of what the
+                    // model was actually shown. Showing only cache misses is what made this panel
+                    // look like it was spending 35x more input than it reported.
+                    Text(
+                        text = display.headline,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFE8E8E8),
+                    )
+                    Spacer(Modifier.height(1.dp))
+                    Text(
+                        text = display.lines.joinToString("  ·  ") { "${it.label.trim()} ${it.value}" },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFFA0A0A0),
+                    )
+                } else {
+                    Text(
+                        text = "${formatTokens(grandInput)} in / ${formatTokens(grandOutput)} out",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFE8E8E8),
+                    )
+                    Spacer(Modifier.height(1.dp))
+                    Text(
+                        text = "Total ${formatTokens(grandTotal)}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
             Icon(
                 imageVector = Icons.Filled.BarChart,
@@ -166,7 +195,7 @@ fun InsightsPanel(
         // v0.1.902: three different things used to render as the same blank panel. They are now
         // named, because "nothing is populated" is unanswerable from the phone — the user cannot
         // tell a fetch that has not run from a window that genuinely has no sessions in it.
-        if (truncated && modelRows.isNotEmpty()) {
+        if (truncated && modelRows.isNotEmpty() && display == null) {
             Text(
                 text = "Older conversations exist beyond this snapshot — totals cover what was fetched.",
                 style = MaterialTheme.typography.labelSmall,
@@ -174,13 +203,29 @@ fun InsightsPanel(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             )
         }
+        // v0.5.1: say out loud when the figures are thin. A gateway without `insights.get` usage
+        // can only answer with main-agent calls and uncached prompt tokens; on a real month that is
+        // ~3% of the prompt volume (77.6M shown vs 2.55B actually sent), which reads as a broken
+        // ratio rather than a missing source. An unlabelled number here is a wrong number.
+        if (display == null) {
+            Text(
+                text = if (windowUsage[days]?.isLoading == true)
+                    "Fetching the server usage rollup…"
+                else
+                    "Approximate — this gateway reports no usage rollup. These are main-agent calls " +
+                        "and uncached prompt tokens only; cached context and background work are not counted.",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFB8860B),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+        }
         when {
-            loading && result.totalRows == 0 -> PanelNotice(
+            loading && result.totalRows == 0 && display == null -> PanelNotice(
                 title = "Loading…",
                 body = "Fetching the conversations this window covers.",
             )
 
-            result.totalRows == 0 -> PanelNotice(
+            result.totalRows == 0 && display == null -> PanelNotice(
                 title = "No conversations loaded",
                 body = "The session list came back empty, so there is nothing to total. " +
                     "This is a connection problem, not a quiet period.",
@@ -202,6 +247,39 @@ fun InsightsPanel(
             )
 
             else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                // v0.5.1: the work that used to be invisible. Memory review, context compaction,
+                // titling and vision are billed like any other call but were never attributed to a
+                // session, so a long session's real cost looked smaller than it was.
+                if (display != null && display.overhead.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "BEHIND THE SCENES",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFC0C0C0),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+                    items(display.overhead, key = { "task:${it.label}" }) { row ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                text = row.label,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFA0A0A0),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = row.value,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFC0C0C0),
+                            )
+                        }
+                    }
+                }
                 item {
                     Text(
                         text = "PER MODEL",

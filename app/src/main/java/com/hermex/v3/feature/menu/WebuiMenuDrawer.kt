@@ -167,6 +167,8 @@ fun WebuiMenuDrawer(
                                 loading = state.insights.isLoading,
                                 truncated = !state.insights.complete,
                                 onRetry = { sessionsVM.loadInsights(force = true) },
+                                windowUsage = state.windowUsage,
+                                onWindowSelected = { days -> sessionsVM.loadWindowUsage(days) },
                                 onClose = { panel = "chat" },
                             )
                             "settings" -> SettingsPanel(onNavigate = onNavigate)
