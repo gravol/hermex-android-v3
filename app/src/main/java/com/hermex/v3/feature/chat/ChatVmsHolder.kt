@@ -119,6 +119,22 @@ class ChatVmsHolder(application: Application) : AndroidViewModel(application) {
         const val MAX_HELD_CHATS = 6
 
         /**
+         * Hard ceiling that streaming protection cannot override (v0.5.2).
+         *
+         * Field evidence (debug export 2026-11-01, app 0.5.1/50): 20 chat VMs alive while the
+         * soft cap said 6. The stale-stream guard deliberately leaves `isStreaming=true` when a
+         * dead turn had content (long gaps look like warmup), and a zombie VM whose session is
+         * finished never receives another MATCHED notification to re-arm or clear that flag —
+         * so every such VM is permanently "streaming", [pickToEvict] protects all of them, and
+         * the cap silently disables itself. Twenty fans then re-log every foreign delta, which
+         * is what flushed the 4,000-entry debug ring in ~5 seconds and made an incident
+         * unexportable. Eviction never interrupts a server turn (the WebSocket is app-wide and
+         * shared, and reopening reloads), so past this number the LRU victim goes regardless
+         * of its streaming flag.
+         */
+        const val HARD_HELD_CHATS = 12
+
+        /**
          * Which session to release, or null for "keep everything". Pure so the policy can be tested
          * without an Activity: [lru] is least-recently-used first, [streaming] holds sessions whose
          * turn is still running, [current] is the chat just touched.
@@ -130,7 +146,9 @@ class ChatVmsHolder(application: Application) : AndroidViewModel(application) {
             limit: Int = MAX_HELD_CHATS,
         ): String? {
             if (lru.size <= limit) return null
-            return lru.firstOrNull { it != current && it !in streaming }
+            lru.firstOrNull { it != current && it !in streaming }?.let { return it }
+            if (lru.size > HARD_HELD_CHATS) return lru.firstOrNull { it != current }
+            return null
         }
     }
 }

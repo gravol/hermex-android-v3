@@ -56,4 +56,17 @@ class ChatVmsHolderEvictionTest {
     @Test fun capOfOneWithOneEntryKeepsIt() {
         assertNull(ChatVmsHolder.pickToEvict(listOf("only"), emptySet(), current = null, limit = 1))
     }
+
+    @Test fun streamingProtectionCannotDefeatTheHardCeiling() {
+        // Field case: turns that died mid-content keep isStreaming=true forever, so every held
+        // VM looks protected and the soft cap silently disables itself (20 VMs alive vs cap 6).
+        // Past HARD_HELD_CHATS the oldest goes even if flagged streaming — eviction never kills
+        // a server turn (shared WebSocket), it only drops the local collector.
+        val twelve = (1..12).map { "s$it" }
+        assertNull("at the hard ceiling with everything streaming, still nothing goes",
+            ChatVmsHolder.pickToEvict(twelve, streaming = twelve.toSet(), current = null, limit = 6))
+        assertEquals("one over the hard ceiling: oldest streaming VM goes",
+            "s1", ChatVmsHolder.pickToEvict(twelve + "s13",
+                streaming = (twelve + "s13").toSet(), current = "s13", limit = 6))
+    }
 }

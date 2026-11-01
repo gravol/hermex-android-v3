@@ -71,6 +71,9 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
      *  this the journal cannot say WHICH one applied or dropped a frame — which is
      *  precisely the question the D/14 blank-row mechanism turns on. */
     private val vmId: Int = System.identityHashCode(this)
+    // Per-VM tally of foreign (wrong-session) notifications per sid, for the FILTERED
+    // log throttle: first delta per foreign sid logs, the rest only bump this counter.
+    private val filteredForeignCounts = mutableMapOf<String, Int>()
 
     /** FIX 2: the foreground poll loop no longer ends at its first reconcile, so the
      *  full-history reload it triggers is rate limited instead (at most one per this
@@ -1720,9 +1723,23 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             // row kept whatever it had at cut over — in D/14's shape, nothing.
             // So: adopt the rotation (and say so), do not lose the turn.
             if (!SessionSidRegistry.isKnownFor(sessionId, nSid)) {
-                DebugLog.log("STATE", "SessionID",
-                    "notification FILTERED: nSid=$nSid != dbKey=$sessionId != liveSid=$liveSid " +
-                    "event=${n::class.simpleName}")
+                // v0.5.2: FILTERED lines were the #1 ring-buffer killer. One export after
+                // a streaming turn: 1,821 FILTERED lines in 5.1 seconds (each held VM logging
+                // every foreign MessageDelta/ReasoningDelta/ThinkingDelta), flushing the whole
+                // 4,000-entry ring — a real incident minutes earlier became unexportable.
+                // Deltas from one foreign sid now log ONCE; later deltas are counted and the
+                // tally rides on the next logged line for that sid. Non-delta foreign events
+                // stay per-event (they're rare and each is meaningful), same policy as the
+                // MATCHED side's v0.1.82 delta rule.
+                val isForeignDelta = n is RpcNotification.MessageDelta ||
+                    n is RpcNotification.ThinkingDelta ||
+                    n is RpcNotification.ReasoningDelta
+                val seenForSid = filteredForeignCounts.merge(nSid, 1) { a, b -> a + b }
+                if (!isForeignDelta || seenForSid == 1) {
+                    DebugLog.log("STATE", "SessionID",
+                        "notification FILTERED: nSid=$nSid != dbKey=$sessionId != liveSid=$liveSid " +
+                        "event=${n::class.simpleName} foreignEventsSeenForSid=$seenForSid")
+                }
                 dispLine(n, "FILTERED",
                     "nSid=$nSid dbKey=$sessionId liveSid=$liveSid event=${n::class.simpleName} " +
                     "knownSids=${SessionSidRegistry.sidsOf(sessionId).size}")
