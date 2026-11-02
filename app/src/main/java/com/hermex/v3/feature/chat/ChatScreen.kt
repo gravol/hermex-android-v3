@@ -119,6 +119,8 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.hermex.v3.feature.settings.SettingsRepository
+import com.hermex.v3.AppState
+import com.hermex.v3.assistant.TtsPlayback
 import com.hermex.v3.feature.menu.WebuiMenuDrawer
 import com.hermex.v3.ui.theme.LocalUiSurfaces
 import com.hermex.core.network.DashboardApiClient
@@ -182,6 +184,8 @@ fun ChatScreen(
     val showToolCalls by settingsRepo.showToolCalls.collectAsState(initial = true)
     // v0.1.97: thinking visibility toggle — same pattern (tools + response stay).
     val showThinking by settingsRepo.showThinking.collectAsState(initial = true)
+    // v0.5.4: spoken assistant replies toggle (Settings > Phone Assistant).
+    val voiceRepliesOn by settingsRepo.voiceRepliesEnabled.collectAsState(initial = false)
 
     // v0.1.102: live tokens/sec readout while streaming. OpenAI-compatible APIs
     // don't stream per-delta token counts, so this estimates from text flow:
@@ -433,6 +437,47 @@ fun ChatScreen(
             delay(1000)
             recordingSeconds++
         }
+    }
+
+    // v0.5.4: phone-assistant launch — when the system assistant (VoiceInteraction
+    // session) opens Hermex, arm the mic immediately. Cold and warm entry both
+    // work: the flag lives in AppState inside this same process.
+    LaunchedEffect(Unit) {
+        if (AppState.consumePendingVoiceStart()) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED
+            ) {
+                startRecording()
+            } else {
+                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    // v0.5.4: spoken replies — with Settings > Phone Assistant > Speak replies on,
+    // the final assistant text of a completed turn is synthesized server-side
+    // (/api/audio/speak) and played here. Silence on failure: the text answer is
+    // already on screen.
+    var wasStreaming by remember { mutableStateOf(false) }
+    var lastSpokenMsgId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state.isStreaming) {
+        if (wasStreaming && !state.isStreaming && voiceRepliesOn) {
+            val last = state.messages.lastOrNull { it.role == "assistant" && !it.isCommandAck }
+            if (last != null && last.id != lastSpokenMsgId && last.content.isNotBlank()) {
+                lastSpokenMsgId = last.id
+                scope.launch {
+                    try {
+                        val r = DashboardApiClient.speakAudio(last.content)
+                        if (r is NetworkResult.Success) {
+                            r.data.data_url?.let { TtsPlayback.play(context, it) }
+                        }
+                    } catch (_: Exception) {
+                        // Voice is a bonus; never error-toast on a failed clip.
+                    }
+                }
+            }
+        }
+        wasStreaming = state.isStreaming
     }
 
     fun sendComposer() {

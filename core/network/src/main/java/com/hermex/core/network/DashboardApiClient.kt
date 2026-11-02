@@ -145,6 +145,21 @@ object DashboardApiClient {
         val provider: String? = null,
     )
 
+    // v0.5.4: dashboard TTS route — synthesizes with the configured tts chain
+    // and returns the audio inline (same contract the desktop voice mode uses).
+    @Serializable
+    data class SpeakRequest(
+        val text: String,
+    )
+
+    @Serializable
+    data class SpeakResponse(
+        val ok: Boolean = false,
+        val data_url: String? = null,
+        val mime_type: String? = null,
+        val provider: String? = null,
+    )
+
     // ── System panels (v0.1.61): cron / skills / config ──
 
     @Serializable
@@ -292,6 +307,32 @@ object DashboardApiClient {
                 result
             } catch (e: Exception) {
                 Log.e("Hermex", "Dashboard transcribe failed", e)
+                NetworkResult.Error(e)
+            }
+        }
+
+    /** v0.5.4: speak text on the server (configured TTS chain) and get the audio back inline. */
+    suspend fun speakAudio(text: String): NetworkResult<SpeakResponse> =
+        withContext(Dispatchers.IO) {
+            DebugLog.log("REQ", "Dashboard", "POST /api/audio/speak (${text.length} chars)")
+            try {
+                val body = json.encodeToString(
+                    SpeakRequest.serializer(), SpeakRequest(text = text),
+                )
+                val response = httpClient.newCall(
+                    Request.Builder()
+                        .url("$restUrl/api/audio/speak")
+                        .post(body.toRequestBody(mediaTypeJson))
+                        .build(),
+                ).execute()
+                val result = response.handleResult(json, SpeakResponse.serializer())
+                DebugLog.log(
+                    "RESP", "Dashboard",
+                    "speak → ${response.code} ok=${result is NetworkResult.Success}",
+                )
+                result
+            } catch (e: Exception) {
+                Log.e("Hermex", "Dashboard speak failed", e)
                 NetworkResult.Error(e)
             }
         }

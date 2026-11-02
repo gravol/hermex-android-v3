@@ -23,6 +23,22 @@ object AppState {
     @Volatile
     var visibleSessionId: String = ""
 
+    /**
+     * One-shot flag set when the system assistant launches Hermex
+     * (VoiceInteractionSession, v0.5.4). Same process as every Hermex
+     * component, so it works for cold starts (service binds in this process
+     * before the activity draws) as well as warm re-launches. ChatScreen
+     * consumes it to auto-start the mic.
+     */
+    @Volatile
+    var pendingVoiceStart: Boolean = false
+
+    fun consumePendingVoiceStart(): Boolean {
+        val v = pendingVoiceStart
+        pendingVoiceStart = false
+        return v
+    }
+
     /** True when the user is looking at this exact session right now. */
     fun isWatching(sessionId: String): Boolean =
         !isBackgrounded && sessionId.isNotEmpty() && sessionId == visibleSessionId

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Assistant-role descriptor (v0.5.4). Format per AOSP
+     VoiceInteractionServiceInfo: root tag voice-interaction-service, and
+     recognitionService is required by the parser even though Hermex does its
+     own speech pipeline (see HermexRecognitionStub). -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.hermex.v3.assistant.HermexVoiceSessionService"
+    android:recognitionService="com.hermex.v3.assistant.HermexRecognitionStub"
+    android:settingsActivity="com.hermex.v3.MainActivity"
+    android:supportsAssist="true" />

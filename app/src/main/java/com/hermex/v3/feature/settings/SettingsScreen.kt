@@ -1,12 +1,15 @@
 package com.hermex.v3.feature.settings
 
 import android.app.Activity
+import android.app.role.RoleManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -521,6 +524,89 @@ fun SettingsScreen(
                     checked = savedShowThinking,
                     onCheckedChange = { checked -> scope.launch { settingsRepo.setShowThinking(checked) } },
                 )
+            }
+
+            Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // v0.5.4: phone-assistant integration.
+            // 1. Voice replies: after each turn, the assistant's final text is
+            //    synthesized on the dashboard (tts: chain) and played here.
+            // 2. Assistant role: Hermex can BE the phone's assistant app.
+            //    GrapheneOS grants the role to sideloaded apps (in-app request
+            //    below — no adb, which matters since the phone never enables
+            //    USB debugging); stock Android offers the same role picker.
+            Text("Phone Assistant", style = MaterialTheme.typography.titleSmall)
+            val savedVoiceReplies by settingsRepo.voiceRepliesEnabled.collectAsState(initial = false)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Speak replies", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Say the final answer aloud after each turn (server-side TTS). Voice notes stay as they are.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = savedVoiceReplies,
+                    onCheckedChange = { checked -> scope.launch { settingsRepo.setVoiceRepliesEnabled(checked) } },
+                )
+            }
+            run {
+                val ctx = LocalContext.current
+                val roleManager = remember { ctx.getSystemService(RoleManager::class.java) }
+                val roleAvailable = remember {
+                    roleManager?.isRoleAvailable(RoleManager.ROLE_ASSISTANT) == true
+                }
+                var roleHeld by remember {
+                    mutableStateOf(roleManager?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true)
+                }
+                val roleLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartActivityForResult(),
+                ) {
+                    roleHeld = roleManager?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true
+                    if (!roleHeld) {
+                        Toast.makeText(ctx, "Assistant role not granted", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Default assistant app", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (roleHeld) {
+                                "Hermex answers the phone's assistant entry points."
+                            } else {
+                                "Set Hermex as the assistant the system launches (voice session opens chat and arms the mic)."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    when {
+                        !roleAvailable -> Text(
+                            "Unavailable",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        roleHeld -> OutlinedButton(
+                            onClick = { },
+                            enabled = false,
+                        ) { Text("Set") }
+                        else -> Button(onClick = {
+                            val roleIntent = roleManager?.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT)
+                            if (roleIntent != null) {
+                                roleLauncher.launch(roleIntent)
+                            } else {
+                                Toast.makeText(ctx, "Role request failed", Toast.LENGTH_SHORT).show()
+                            }
+                        }) { Text("Set as assistant") }
+                    }
+                }
             }
 
             Divider(modifier = Modifier.padding(vertical = 8.dp))

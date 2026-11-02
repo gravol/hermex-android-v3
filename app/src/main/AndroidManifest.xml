@@ -70,6 +70,34 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- v0.5.4: phone-assistant role (Hermex as the assistant app).
+             The system binds the interaction service (hence BIND permission +
+             exported); the session service stays app-internal. -->
+        <service
+            android:name=".assistant.HermexVoiceInteractionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/voice_interaction" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".assistant.HermexVoiceSessionService"
+            android:exported="false" />
+        <!-- Legacy recognition service the meta-XML parser demands but Hermex
+             never uses (recognition lives on the gateway). Same stub trick as
+             Dicio on GrapheneOS; see HermexRecognitionStub. -->
+        <service
+            android:name=".assistant.HermexRecognitionStub"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".notify.NotificationReplyReceiver"
             android:enabled="true"

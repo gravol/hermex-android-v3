@@ -116,6 +116,12 @@ class SettingsRepository(context: Context) {
     // v0.1.97: thinking visibility
     suspend fun setShowThinking(value: Boolean) = store.setBoolean(KEY_SHOW_THINKING, value)
 
+    /** v0.5.4: speak the final assistant reply aloud in the voice-assistant mode. */
+    val voiceRepliesEnabled: Flow<Boolean> =
+        store.getBoolean(KEY_VOICE_REPLIES).map { it ?: false }
+
+    suspend fun setVoiceRepliesEnabled(value: Boolean) = store.setBoolean(KEY_VOICE_REPLIES, value)
+
     // v0.1.88: model picker — applied to NEW sessions (desktop-composer contract)
     val modelPick: Flow<String> = store.getString(KEY_MODEL_PICK).map { it ?: "" }
     val reasoningPick: Flow<String> = store.getString(KEY_REASONING_PICK).map { it ?: "" }
@@ -189,6 +195,7 @@ class SettingsRepository(context: Context) {
         const val KEY_SHOW_TOOL_CALLS = "show_tool_calls"
         const val KEY_SHOW_THINKING = "show_thinking"
         const val KEY_PINNED_SESSIONS = "pinned_session_ids"
+        const val KEY_VOICE_REPLIES = "voice_replies"
         const val KEY_MODEL_PICK = "model_pick"
         const val KEY_REASONING_PICK = "reasoning_pick"
         const val KEY_NTFY_ENABLED = "ntfy_enabled"
