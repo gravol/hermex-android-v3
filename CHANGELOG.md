@@ -1,3 +1,11 @@
+## v0.5.3 (vc52) — preserve the provider when picking a model
+
+- Fixed cloud picks inheriting the local engine route. The picker used to retain only the model ID, dropping the selected provider; Terra could display in the chip while requests went to Clerk's stopped endpoint.
+- Model picks now preserve provider + model together for both “Apply to this chat” and “Save for new chats.” New sessions send separate model/provider RPC fields; model switching sends an explicit provider flag. Namespaced OpenRouter IDs and custom-provider aliases are preserved; older bare saved picks remain readable (reselect and save once to pin their provider).
+- Provider is also part of row selection identity, so identical model IDs under different providers no longer share a checkmark.
+- Eight regression tests cover cloud/local routes, saved round trips, namespaced/colon model IDs, duplicate model names, legacy picks, defaults and reasoning. All 58 network tests passed; signed release build succeeded. Live gateway tests verified fresh Terra creation and settled local-to-Terra switching, both returning CLOUD_ROUTE_OK.
+- No ADB device was connected: installation and phone UI verification remain user-side. An immediate switch during the gateway's initial agent build remains a separate server race; this release avoids it for new chats by sending the route at creation.
+
 ## v0.5.2 (vc51) — 2026-11-01 — the debug log kept eating the incident before I could read it
 
 - **Reported by Jeff:** a new gpt session wouldn't start (he had to fall back to SSH CLI), and the debug export

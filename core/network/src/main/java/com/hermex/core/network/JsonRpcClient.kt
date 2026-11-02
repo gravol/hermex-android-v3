@@ -824,9 +824,7 @@ class JsonRpcClient(
         reasoningEffort: String? = null,
     ): Pair<String, String?> {
         DebugLog.log("RPC", "JsonRpc", "session.create (model=$model effort=$reasoningEffort)")
-        val params = mutableMapOf<String, Any>("source" to "api")
-        if (!model.isNullOrBlank()) params["model"] = model
-        if (!reasoningEffort.isNullOrBlank()) params["reasoning_effort"] = reasoningEffort
+        val params = ModelPick.createParams(model, reasoningEffort)
         val result: CreateSessionResult = request(
             "session.create",
             params,

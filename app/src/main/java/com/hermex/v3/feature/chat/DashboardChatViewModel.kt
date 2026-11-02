@@ -2505,7 +2505,7 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 DebugLog.log("RPC", "DashboardChat",
                     "config.set reasoning=$effort (thinkingOn=$thinkingOn)")
                 uiState = uiState.copy(
-                    currentModel = model.ifBlank { uiState.currentModel },
+                    currentModel = com.hermex.core.network.ModelPick.decode(model).model.ifBlank { uiState.currentModel },
                     currentReasoning = effort.ifBlank { uiState.currentReasoning },
                 )
                 // The server emits session.info with the new model/reasoning; a

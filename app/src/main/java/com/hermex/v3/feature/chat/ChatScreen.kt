@@ -3269,6 +3269,7 @@ private fun ModelPickerSheet(
     val scope = rememberCoroutineScope()
     var options by remember { mutableStateOf<JsonRpcClient.ModelOptionsResult?>(null) }
     var selectedModel by remember { mutableStateOf("") }
+    var selectedProvider by remember { mutableStateOf("") }
     // Start from the session's current effort so "Apply to this chat" doesn't
     // silently reset reasoning to medium when the user only meant to switch model.
     var selectedEffort by remember { mutableStateOf(viewModel.uiState.currentReasoning ?: DEFAULT_EFFORT) }
@@ -3282,6 +3283,7 @@ private fun ModelPickerSheet(
             val opts = viewModel.loadModelOptions()
             options = opts
             selectedModel = opts.model ?: ""
+            selectedProvider = opts.provider ?: ""
             selectedEffort = viewModel.uiState.currentReasoning ?: selectedEffort
             selectedThinkingOn = selectedEffort.isBlank() || !effortIsOff(selectedEffort)
         } catch (e: Exception) {
@@ -3324,7 +3326,7 @@ private fun ModelPickerSheet(
                         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
                     )
                     provider.models.forEach { model ->
-                        val selected = model == selectedModel
+                        val selected = model == selectedModel && provider.slug == selectedProvider
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -3333,7 +3335,7 @@ private fun ModelPickerSheet(
                                     if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
                                 )
-                                .clickable { selectedModel = model }
+                                .clickable { selectedModel = model; selectedProvider = provider.slug }
                                 .padding(horizontal = 10.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -3406,7 +3408,7 @@ private fun ModelPickerSheet(
                     onClick = {
                         scope.launch {
                             saving = true
-                            viewModel.applyModelToSession(selectedModel, selectedEffort, selectedThinkingOn)
+                            viewModel.applyModelToSession(com.hermex.core.network.ModelPick(selectedModel, selectedProvider).switchValue(), selectedEffort, selectedThinkingOn)
                             saving = false
                             Toast.makeText(context, "Applied to this chat", Toast.LENGTH_SHORT).show()
                             onDismiss()
@@ -3423,7 +3425,7 @@ private fun ModelPickerSheet(
                     onClick = {
                         scope.launch {
                             saving = true
-                            viewModel.saveModelPick(selectedModel, selectedEffort, selectedThinkingOn)
+                            viewModel.saveModelPick(com.hermex.core.network.ModelPick(selectedModel, selectedProvider).switchValue(), selectedEffort, selectedThinkingOn)
                             saving = false
                             Toast.makeText(context, "Saved — applies to new chats", Toast.LENGTH_SHORT).show()
                             onDismiss()
