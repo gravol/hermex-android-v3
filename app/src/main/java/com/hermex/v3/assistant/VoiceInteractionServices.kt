@@ -48,7 +48,7 @@ class HermexAssistantSession(private val host: VoiceInteractionSessionService) :
     override fun onShow(args: Bundle?, showFlags: Int) {
         // Same-process guarantee: the services run inside the Hermex process,
         // so ChatScreen sees this on cold AND warm entry.
-        AppState.pendingVoiceStart = true
+        AppState.requestVoiceStart()
         val intent = Intent(host, MainActivity::class.java).addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
         )

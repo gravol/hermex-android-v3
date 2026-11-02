@@ -11,6 +11,7 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -440,10 +441,12 @@ fun ChatScreen(
     }
 
     // v0.5.4: phone-assistant launch — when the system assistant (VoiceInteraction
-    // session) opens Hermex, arm the mic immediately. Cold and warm entry both
-    // work: the flag lives in AppState inside this same process.
-    LaunchedEffect(Unit) {
-        if (AppState.consumePendingVoiceStart()) {
+    // session) opens Hermex, arm the mic immediately. Keyed on AppState.voiceTick
+    // so warm re-launches (screen already composed, activity merely reordered to
+    // front) fire too; the tick is the only signal composition can observe.
+    val voiceTick by AppState.voiceTick.collectAsState()
+    LaunchedEffect(voiceTick) {
+        if (voiceTick > 0 && AppState.consumePendingVoiceStart()) {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
                 == PackageManager.PERMISSION_GRANTED
             ) {
@@ -461,6 +464,8 @@ fun ChatScreen(
     var wasStreaming by remember { mutableStateOf(false) }
     var lastSpokenMsgId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(state.isStreaming) {
+        Log.i("HermexTTS", "edge wasStreaming=$wasStreaming now=${state.isStreaming} " +
+            "voiceReplies=$voiceRepliesOn msgs=${state.messages.size}")
         if (wasStreaming && !state.isStreaming && voiceRepliesOn) {
             val last = state.messages.lastOrNull { it.role == "assistant" && !it.isCommandAck }
             if (last != null && last.id != lastSpokenMsgId && last.content.isNotBlank()) {
@@ -469,10 +474,18 @@ fun ChatScreen(
                     try {
                         val r = DashboardApiClient.speakAudio(last.content)
                         if (r is NetworkResult.Success) {
+                            Log.i("HermexTTS", "speak ok mime=${r.data.mime_type} len=${r.data.data_url?.length}")
                             r.data.data_url?.let { TtsPlayback.play(context, it) }
+                        } else {
+                            val detail = when (r) {
+                                is NetworkResult.HttpError -> "HTTP ${r.code}: ${r.message.take(160)}"
+                                is NetworkResult.Error -> "err: ${r.exception}"
+                                else -> "$r"
+                            }
+                            Log.w("HermexTTS", "speak failed: $detail")
                         }
-                    } catch (_: Exception) {
-                        // Voice is a bonus; never error-toast on a failed clip.
+                    } catch (e: Exception) {
+                        Log.w("HermexTTS", "speak threw: ${e.message}", e)
                     }
                 }
             }

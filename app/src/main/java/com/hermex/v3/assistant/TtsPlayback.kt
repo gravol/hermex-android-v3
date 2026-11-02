@@ -37,6 +37,7 @@ object TtsPlayback {
             mp.setDataSource(file.absolutePath)
             mp.prepare()
             mp.start()
+            Log.i(TAG, "TTS playing file=${file.name} durMs=${mp.duration}")
         } catch (e: Exception) {
             Log.w(TAG, "TTS playback failed", e)
             runCatching { file.delete() }

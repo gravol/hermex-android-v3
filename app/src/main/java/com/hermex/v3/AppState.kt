@@ -1,5 +1,8 @@
 package com.hermex.v3
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+
 /**
  * App-wide foreground/background flag (v0.1.75).
  *
@@ -32,6 +35,20 @@ object AppState {
      */
     @Volatile
     var pendingVoiceStart: Boolean = false
+
+    /**
+     * Bumped on every assistant voice request (v0.5.4 fix). Compose screens
+     * key their LaunchedEffects on this: an @Volatile flag alone is invisible
+     * to composition, so a warm assistant re-launch (activity already
+     * resumed) would silently arm nothing.
+     */
+    private val _voiceTick = MutableStateFlow(0)
+    val voiceTick: StateFlow<Int> = _voiceTick
+
+    fun requestVoiceStart() {
+        pendingVoiceStart = true
+        _voiceTick.value++
+    }
 
     fun consumePendingVoiceStart(): Boolean {
         val v = pendingVoiceStart

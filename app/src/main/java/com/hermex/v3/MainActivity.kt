@@ -32,6 +32,7 @@ import com.hermex.v3.feature.chat.ChatVmsHolder
 import com.hermex.v3.feature.botscreen.BotScreenScreen
 import com.hermex.v3.feature.onboarding.DashboardSetupScreen
 import com.hermex.v3.feature.sessions.SessionsScreen
+import com.hermex.v3.feature.sessions.SessionsViewModel
 import com.hermex.v3.feature.settings.SettingsRepository
 import com.hermex.v3.feature.settings.SettingsScreen
 import com.hermex.v3.feature.soul.SoulScreen
@@ -217,6 +218,27 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
             )
         }
         composable("home") {
+            // v0.5.4: assistant entry while on home — cold launch composes
+            // this with voiceTick already >0 (session service ran first, same
+            // process), warm re-launch bumps the tick. Create a session and
+            // open it; the flag is NOT consumed here — ChatScreen consumes it
+            // to arm the mic on entry.
+            val sessionsVm: SessionsViewModel = viewModel()
+            val voiceTick by AppState.voiceTick.collectAsState()
+            LaunchedEffect(voiceTick) {
+                if (voiceTick > 0 && AppState.pendingVoiceStart) {
+                    sessionsVm.createSession { sid ->
+                        if (sid != null) {
+                            val enc = URLEncoder.encode("New session", "UTF-8")
+                            navController.navigate("chat/$sid/$enc") { launchSingleTop = true }
+                        } else {
+                            // Creation failed — drop the request, don't let a
+                            // later manual chat-open arm the mic out of turn.
+                            AppState.consumePendingVoiceStart()
+                        }
+                    }
+                }
+            }
             SessionsScreen(
                 onSessionTap = { session ->
                     val encodedTitle = URLEncoder.encode(session.title ?: session.id, "UTF-8")
@@ -230,6 +252,7 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
                 onOpenBotScreen = { navController.navigate("botscreen") },
                 onOpenSkills = { navController.navigate("skills") },
                 onOpenConfig = { navController.navigate("config") },
+                viewModel = sessionsVm,
             )
         }
         composable("settings") {
