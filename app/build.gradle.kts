@@ -13,8 +13,8 @@ android {
         applicationId = "com.hermex.v3"
         minSdk = 34
         targetSdk = 34
-        versionCode = 54
-        versionName = "0.5.5"
+        versionCode = 55
+        versionName = "0.5.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -152,6 +152,8 @@ dependencies {
     implementation(libs.coil.compose)
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.34.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.34.0")
+    // v0.5.6: LaTeX typesetting for display math (MathTransform → MathImages → image hook)
+    implementation("ru.noties:jlatexmath-android:0.2.0")
 
     // DataStore
     implementation(libs.datastore.preferences)
