@@ -1920,10 +1920,16 @@ private fun MessageBubble(
                 // during streaming (fixes scroll-crazy feedback loop).
                 // Override heading typography with reasonable sizes (not
                 // displayLarge ~57sp which "balloons" text in the bubble).
+                val mdContent = if (!isUser && MathTransform.looksLikeMath(message.content))
+                    MathTransform.toMarkdown(message.content).also { t ->
+                        android.util.Log.d(
+                            "HermexMath",
+                            "transformed msg len=${message.content.length} images=${Regex("!\\[math\\]\\(latex:").findAll(t).count()}",
+                        )
+                    }
+                else message.content
                 val mdState = com.mikepenz.markdown.model.rememberMarkdownState(
-                    content = if (!isUser && MathTransform.looksLikeMath(message.content))
-                        MathTransform.toMarkdown(message.content)
-                    else message.content,
+                    content = mdContent,
                     immediate = true,
                 )
                 // Selectable text (v0.1.93): wrap in SelectionContainer so any
@@ -1951,13 +1957,16 @@ private fun MessageBubble(
                             h6 = MaterialTheme.typography.bodyMedium,
                             text = MaterialTheme.typography.bodyMedium,
                         ),
+                        // v0.5.7: math pipeline v2 (see MathRendering). The parser natively
+                        // makes math tokens the library silently drops — the annotator emits
+                        // them as literal text (currency protection). Paragraph images never
+                        // hit components.image; they go through ImageTransformer, whose library
+                        // default is a NO-OP — ours draws latex: bitmaps.
+                        annotator = remember { mathAnnotator() },
+                        imageTransformer = mathImageTransformer(),
                         components = markdownComponents(
                             codeBlock = { CopyableCodeBlock(it, highlight = !message.isStreaming) },
                             codeFence = { CopyableCodeFence(it, highlight = !message.isStreaming) },
-                            // v0.5.6: math display blocks (see MathTransform/MathImages). Our
-                            // generated image URLs are `latex:`-scheme only; anything else we
-                            // never produce, so it renders nothing.
-                            image = { MathImageComponent(it) },
                         ),
                     )
                 }
@@ -3219,54 +3228,6 @@ private fun TodoRow(todo: UiTodo) {
  * blackie build, commit 0542d2f; our internals keep SafeCodeContent — off-composition
  * highlighting, v0.1.897 ANR fix — instead of his highlightedCode*.)
  */
-/**
- * v0.5.6: typeset display-math component. MathTransform turns $$…$$ blocks into
- * `latex:` image URLs; we draw them with JLaTeXMath (MathImages) and render the bitmap
- * full bubble width. Malformed LaTeX falls back to the raw source in monospace, never a
- * broken-image placeholder.
- */
-@Composable
-private fun MathImageComponent(model: MarkdownComponentModel) {
-    // No public url accessor in 0.34 — our generated images are always `![math](latex:…)`,
-    // so read the node's own text span from the content and pull the scheme out of it.
-    val nodeText = model.content.substring(
-        model.node.startOffset.coerceIn(0, model.content.length),
-        model.node.endOffset.coerceIn(0, model.content.length),
-    )
-    val url = Regex("""\((latex:[^)\s]+)\)""").find(nodeText)?.groupValues?.get(1) ?: return
-    val latex = MathTransform.decodeLatex(url) ?: return
-    val color = MaterialTheme.colorScheme.onSurface.toArgb()
-    val basePx = with(androidx.compose.ui.platform.LocalDensity.current) {
-        MaterialTheme.typography.bodyMedium.fontSize.toPx() * 1.2f
-    }
-    var img by remember(latex, color, basePx) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    var failed by remember(latex) { mutableStateOf(false) }
-    androidx.compose.foundation.layout.BoxWithConstraints(
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        val maxW = constraints.maxWidth
-        LaunchedEffect(latex, color, basePx, maxW) {
-            val r = MathImages.render(latex, basePx, color, maxW.coerceAtLeast(320))
-            if (r == null) failed = true else img = r
-        }
-        img?.let {
-            androidx.compose.foundation.Image(
-                bitmap = it,
-                contentDescription = "formula",
-                alignment = Alignment.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        if (failed) {
-            Text(
-                text = latex,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-            )
-        }
-    }
-}
-
 @Composable
 private fun CopyableCodeBlock(model: MarkdownComponentModel, highlight: Boolean) {
     MarkdownCodeBlock(model.content, model.node) { code, language, _ ->

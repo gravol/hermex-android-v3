@@ -99,4 +99,56 @@ class MathTransformTest {
         val s = "he said \$hello there\$ to me"
         assertEquals(s, MathTransform.toMarkdown(s))
     }
+
+    @Test
+    fun `the full decoy paragraph survives intact`() {
+        val para = ("**And two decoys that must stay plain text**, not render: the "
+            + "panel cost **\$5 CAD and \$20** at Gescan for a **total \$145**, and "
+            + "code stays code: `\$\$x\$\$` inline, plus a fenced block:")
+        assertEquals(para, MathTransform.toMarkdown(para))
+    }
+
+    @Test
+    fun `inline math paragraph is converted to code spans, display untouched otherwise`() {
+        val para = ("An inline one: effective refresh rate is "
+            + "\$R_{eff} = B_w \\times f_{util} + A_w\$ where \$R_{eff} \\leq B_w + A_w\$.")
+        val out = MathTransform.toMarkdown(para)
+        // both inline spans converted, nothing else changed
+        assertTrue(out.contains("R_eff = B_w × f_util + A_w"))
+        assertTrue(out.contains("R_eff ≤ B_w + A_w"))
+        assertTrue(out.startsWith("An inline one:"))
+    }
+
+    @Test
+    fun `exact test message renders the designed output`() {
+        val src = "Here's your test reply — this message itself is the test. It contains:" + "\n" +
+            "" + "\n" +
+            "- A display equation: \$\$\\text{bytes/token} = \\sum_{l=1}^{L} \\left( \\frac{P_l \\cdot n_{active}}{n_{total}} + K_l + V_l \\right)\$\$" + "\n" +
+            "- An inline one: effective refresh rate is \$R_{eff} = B_w \\times f_{util} + A_w\$ where \$R_{eff} \\leq B_w + A_w\$." + "\n" +
+            "- A multi-line display block that should collapse into one rendered equation:" + "\n" +
+            "" + "\n" +
+            "\$\$\\Delta_{eff} = (0.49 \\times 0.9) + 0.21" + "\n" +
+            "= 0.651\$\$" + "\n" +
+            "" + "\n" +
+            "- And two decoys that must **stay plain text, not render**: the panel cost **\$5 CAD and \$20** at Gescan for a **total \$145**, and code stays code: `\$\$x\$\$` inline, plus a fenced block:" + "\n" +
+            "" + "\n" +
+            "```" + "\n" +
+            "\$\$this should stay raw\$\$" + "\n" +
+            "val price = \"\$\$not math\$\$\"" + "\n" +
+            "```" + "\n" +
+            "" + "\n" +
+            "If the two big equations show as typeset math, the inline ones show as clean text like `R_eff = B_w × f_util + A_w`, and the dollar amounts + code block look exactly as written — it's all working."
+        val out = MathTransform.toMarkdown(src)
+        // exactly 2 images: the two display equations. The fenced $$…$$ and the
+        // `$$x$$` inline-code decoy must NOT become images, and currency stays prose.
+        val imgs = Regex("""!\[math]\(latex:""").findAll(out).toList()
+        assertEquals("IMG POSITIONS: " + imgs.map { it.range }, 2, imgs.size)
+        assertTrue(out.contains("R_eff = B_w \u00d7 f_util + A_w"))
+        assertTrue(out.contains("R_eff \u2264 B_w + A_w"))
+        val decoy = src.substringAfter("and code stays code: ").substringBefore(" inline")
+        assertTrue("inline-code decoy mangled: " + out.substringAfter("Gescan").take(120),
+            out.contains(decoy))
+        val fencedLine = src.substringAfter("```\n").substringBefore("\nval price")
+        assertTrue("fence mangled: " + out.substringAfter("```\n").take(60), out.contains(fencedLine))
+    }
 }
