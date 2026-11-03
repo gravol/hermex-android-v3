@@ -16,5 +16,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "Hermex"
 include(":app")
+include(":baselineprofile")
 include(":core:network")
 include(":core:data")

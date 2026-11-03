@@ -38,6 +38,28 @@ class WsConnectionManager(
 ) {
     enum class State { Disconnected, Connecting, Connected, Reconnecting }
 
+    /**
+     * v0.5.5: WHY the last connection died, so the UI can tell "the gateway restarted"
+     * apart from "Wi-Fi dropped". A graceful gateway shutdown sends a WebSocket close
+     * frame (1001 Going Away / 1012 Service Restart); a network drop kills the TCP
+     * socket with no frame at all. Recorded by whichever socket callback fired, and
+     * read exactly once by the ViewModel on the next CONNECTED edge.
+     */
+    enum class DropReason { None, GatewayRestarted, ClosedByServer, ConnectionLost }
+
+    /** Pure so the boundary cases are unit-testable without a socket. */
+    fun classifyClose(code: Int): DropReason = when (code) {
+        1001, 1012 -> DropReason.GatewayRestarted
+        else -> DropReason.ClosedByServer
+    }
+
+    // AtomicReference, not a StateFlow: nothing observes this reactively — it is written
+    // by whichever socket callback fired and read exactly once on the next CONNECTED edge.
+    private val lastDropReason = java.util.concurrent.atomic.AtomicReference(DropReason.None)
+
+    /** Read and clear the drop reason — single consumer (chat ViewModel). */
+    fun consumeLastDropReason(): DropReason = lastDropReason.getAndSet(DropReason.None)
+
     private val _state = MutableStateFlow(State.Disconnected)
     val state: StateFlow<State> = _state.asStateFlow()
     val isConnected: Boolean get() = _state.value == State.Connected
@@ -343,6 +365,8 @@ class WsConnectionManager(
                 DebugLog.log("WS", "Connection", "onClosed code=$code")
                 this@WsConnectionManager.webSocket = null
                 if (!isUserDisconnect) {
+                    // v0.5.5: record why the socket closed (restart vs server-side close).
+                    lastDropReason.set(classifyClose(code))
                     // v0.1.889: same race as onFailure — a reconnect loop in flight is
                     // driving this socket, and its success check reads the shared state.
                     reconnectJob?.cancel()
@@ -363,6 +387,8 @@ class WsConnectionManager(
                 DebugLog.log("WS", "Connection", "onFailure: ${t.message} (http=${response?.code})")
                 this@WsConnectionManager.webSocket = null
                 if (!isUserDisconnect) {
+                    // v0.5.5: no close frame was exchanged — the route died, not the gateway.
+                    lastDropReason.set(DropReason.ConnectionLost)
                     // v0.1.889: an in-flight reconnect loop is driving the socket that just
                     // died, and its success check reads the shared state — so it reports
                     // "connected!" on this dead generation. Drop the loop so the next

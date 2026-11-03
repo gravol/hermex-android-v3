@@ -129,6 +129,7 @@ import com.hermex.core.network.DebugLog
 import com.hermex.core.network.JsonRpcClient
 import com.hermex.core.network.NetworkResult
 import com.hermex.core.network.SessionSummary
+import com.hermex.core.network.WsConnectionManager
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.Instant
@@ -864,6 +865,43 @@ fun ChatScreen(
                                         .padding(horizontal = 4.dp, vertical = 1.dp),
                                 )
                             }
+                        }
+                        // v0.5.5: honest connection status. "Reconnecting…" is delayed
+                        // 1.5 s so brief reconnect blips never flash; the restored
+                        // notice shows 6 s and distinguishes a gateway restart (the
+                        // socket closed gracefully) from a dropped route.
+                        val notice = viewModel.connectionNotice
+                        var statusVisible by remember { mutableStateOf(false) }
+                        LaunchedEffect(notice) {
+                            when (notice) {
+                                null -> statusVisible = false
+                                is ConnectionNotice.Reconnecting -> {
+                                    delay(1_500)
+                                    statusVisible = viewModel.connectionNotice is ConnectionNotice.Reconnecting
+                                }
+                                is ConnectionNotice.Restored -> {
+                                    statusVisible = true
+                                    delay(6_000)
+                                    viewModel.clearConnectionNotice()
+                                    statusVisible = viewModel.connectionNotice is ConnectionNotice.Reconnecting
+                                }
+                            }
+                        }
+                        if (statusVisible && notice != null) {
+                            Text(
+                                text = when (notice) {
+                                    is ConnectionNotice.Restored ->
+                                        if (notice.reason == WsConnectionManager.DropReason.GatewayRestarted)
+                                            "Gateway restarted — reconnected ✓"
+                                        else "Reconnected ✓"
+                                    else -> "Reconnecting…"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (notice is ConnectionNotice.Restored)
+                                    MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.error,
+                                maxLines = 1,
+                            )
                         }
                     }
                 },

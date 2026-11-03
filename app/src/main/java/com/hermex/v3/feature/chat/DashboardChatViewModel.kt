@@ -59,6 +59,15 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     // Compose snapshot state — identical pattern to ChatViewModel
     override var uiState by mutableStateOf(ChatUiState())
 
+    /** v0.5.5: honest connection status for the chat top bar (see ConnectionNotice).
+     *  Snapshot state like uiState — the composable reads it directly. */
+    override var connectionNotice by mutableStateOf<ConnectionNotice?>(null)
+
+    /** The UI calls this after the transient "reconnected" notice has been visible. */
+    override fun clearConnectionNotice() {
+        if (connectionNotice is ConnectionNotice.Restored) connectionNotice = null
+    }
+
     private var sessionId: String = ""         // stable DB session key — ONLY value for RPC calls
     private var liveSid: String = ""           // transient live RPC sid — DEBUG ONLY, NEVER used in RPC
     private var resumedSessionId: String = ""   // "resumed" field from session.resume response
@@ -1431,6 +1440,24 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                         // whether the edge ever existed.
                         val isEdge = wsState.toString().uppercase() == "CONNECTED" &&
                             previousWsState?.toString()?.uppercase() != "CONNECTED"
+                        // v0.5.5: honest status edges. Only the RECONNECTING state (the
+                        // manager's backoff loop) surfaces "reconnecting…" — a deliberate
+                        // user disconnect stays quiet, as before. The CONNECTED edge
+                        // consumes why the socket died so the UI can say "gateway
+                        // restarted" vs a plain "reconnected" (the WS close frame is the
+                        // discriminator: 1001/1012 = graceful shutdown, failure-without-
+                        // close-frame = dead route).
+                        run {
+                            val nowC = wsState.toString().uppercase() == "CONNECTED"
+                            val wasC = previousWsState?.toString()?.uppercase() == "CONNECTED"
+                            when {
+                                nowC && !wasC -> connectionNotice = ConnectionNotice.Restored(
+                                    wsConnection.consumeLastDropReason(),
+                                )
+                                wasC && wsState == WsConnectionManager.State.Reconnecting ->
+                                    connectionNotice = ConnectionNotice.Reconnecting
+                            }
+                        }
                         DebugLog.log("TRACE", "vm_state_rx",
                             "state=$wsState prev=$previousWsState edge=$isEdge (sessionId=$sessionId liveSid=$liveSid)")
                         DebugLog.log("WS", "ChatVM",

@@ -55,4 +55,10 @@ abstract class ChatViewModelContract(application: Application) : AndroidViewMode
     /** Load the current YOLO state from the server (for the composer button). */
     /** Toggle YOLO mode on/off for this session. */
     open fun setYolo(enabled: Boolean) {}
+
+    // ── Connection notice (v0.5.5) — honest status for the chat top bar ──
+    /** Set only by the dashboard backend; the legacy SSE ViewModel leaves it null. */
+    open var connectionNotice: ConnectionNotice? by mutableStateOf(null)
+    /** Called by the UI after the transient "reconnected" notice has been visible. */
+    open fun clearConnectionNotice() {}
 }
