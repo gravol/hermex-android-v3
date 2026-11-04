@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-04 — current is **v0.8.3** (official-app layout: composer silhouette, status pill, card restyle)
 **Current version:** v0.8.3 (versionCode 64) — fixes go out as 0.x
-**HEAD commit:** see `git log -1` (v0.8.3: pending; v0.8.2: 50ce272; v0.8.1: 4ecf628; v0.8.0: 910c478; v0.7.0: 27da3e1; v0.6.0: ca2d56d; v0.5.9: 6463e80 + 56320a3 + a2a4c20 + docs)
+**HEAD commit:** see `git log -1` (v0.8.3: 56f1dba; v0.8.2: 50ce272; v0.8.1: 4ecf628; v0.8.0: 910c478; v0.7.0: 27da3e1; v0.6.0: ca2d56d; v0.5.9: 6463e80 + 56320a3 + a2a4c20 + docs)
 **Branch:** `master`  
 **Repository:** `git@github.com:gravol/hermex-android-v3.git`  
 **Working directory:** `/home/jeff/HermexAndroidV3` (canonical; `~/HermexAndroid` = frozen v2 fallback)
