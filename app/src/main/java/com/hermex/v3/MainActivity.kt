@@ -30,6 +30,8 @@ import androidx.navigation.navArgument
 import com.hermex.v3.feature.chat.ChatScreen
 import com.hermex.v3.feature.chat.ChatVmsHolder
 import com.hermex.v3.feature.botscreen.BotScreenScreen
+import com.hermex.v3.feature.agents.AgentsScreen
+import com.hermex.v3.feature.mcp.McpScreen
 import com.hermex.v3.feature.onboarding.DashboardSetupScreen
 import com.hermex.v3.feature.sessions.SessionsScreen
 import com.hermex.v3.feature.sessions.SessionsViewModel
@@ -272,6 +274,16 @@ fun HermexNavGraph(chatVmsHolder: ChatVmsHolder) {
         }
         composable("botscreen") {
             BotScreenScreen(
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable("agents") {
+            AgentsScreen(
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable("mcp") {
+            McpScreen(
                 onBack = { navController.popBackStack() },
             )
         }

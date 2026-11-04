@@ -13,6 +13,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.ChatBubble
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Handyman
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
@@ -110,6 +112,18 @@ fun WebuiMenuDrawer(
                             label = "Screen",
                             selected = false,
                             onClick = { onNavigate("botscreen") },
+                        )
+                        RailButton(
+                            icon = { Icons.Outlined.Groups },
+                            label = "Agents",
+                            selected = false,
+                            onClick = { onNavigate("agents") },
+                        )
+                        RailButton(
+                            icon = { Icons.Outlined.Extension },
+                            label = "MCP",
+                            selected = false,
+                            onClick = { onNavigate("mcp") },
                         )
                         Spacer(Modifier.weight(1f))
                         RailButton(
