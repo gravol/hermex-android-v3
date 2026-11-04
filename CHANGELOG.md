@@ -1,4 +1,14 @@
 ## v0.6.0 (vc59) — official-app chat rendering
+## v0.7.0 (vc60) — background work, official attach menu, multi-image
+
+More ports from the official client (from Jeff's screenshots):
+
+- **Background Work**: while this session has background terminal tasks, an animated "Running N background task" chip sits above the composer; tap opens a sheet listing every task (command, status, output preview) with a red stop button per running task (`process.list`/`process.kill`, live-sid via resume omit_messages like the Children sheet).
+- **Attach menu** now mirrors the official: Camera / Scan Document (routes to camera for now) / Photo Library / Files / Drawing / Voice Message.
+- **Multi-image send**: pick up to 8 photos at once; per-thumbnail remove; staged via repeated image.attach_bytes, sent as ONE message.
+- **Drawing**: finger-draw dialog (undo / clear / stroke width) attaches a PNG.
+- Device-verified on Pixel 8: chip appeared for a live watcher within one poll; sheet showed Finished + Running rows; stop flipped the row to "Exited (-15)"; 3-image pick → "3 attached" → sent; drawing attached.
+
 
 Ported the official client's chat feel (from Jeff's screenshots of it), keeping our tok/s + context meter which it lacks:
 
