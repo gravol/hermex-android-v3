@@ -1,4 +1,13 @@
 ## v0.6.0 (vc59) — official-app chat rendering
+## v0.8.1 (vc62) — per-item cards, interleaved thoughts, merged detail sheets
+
+- **Clear bubbles per item**: every tool call and every thought is its own bordered rounded card (fill + hairline border), matching the official app's chat density.
+- **One THOUGHT box per thought process**: a tool call starting closes the current thinking segment; segments render interleaved with tool rows exactly where they happened (anchored by tool id).
+- **Richer detail sheets**: history tool rows now merge by tool-call id — Input (args) + Output (result) + Call ID + Context, each with Copy. Previously history rows showed only Call ID/Context.
+- Tool rows display the call's INPUT, extracting the command-like field from JSON args.
+- Thinking boxes cap at ~4 lines and scroll within themselves; the live one follows its tail.
+- Device-verified on Pixel 8 against a live turn: interleaved segments, bordered cards, merged sheet with 4 Copy actions.
+
 ## v0.8.0 (vc61) — inline live turn, queued messages, activity chips
 
 The live turn now behaves like the official app:
