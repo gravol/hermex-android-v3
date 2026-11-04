@@ -1,4 +1,13 @@
 ## v0.6.0 (vc59) — official-app chat rendering
+## v0.8.0 (vc61) — inline live turn, queued messages, activity chips
+
+The live turn now behaves like the official app:
+
+- **Inline thinking**: the THINKING card renders in the transcript where it started (expanded + spinner while live), tool calls stream as single compact rows in flow, and the answer stacks below. The docked bottom panel is gone; its tok/s + thinking-speed + elapsed readout survives as a one-line status strip at the head of the streaming item. At turn end the card collapses to the normal THOUGHT preview.
+- **Queued messages**: while a turn runs, a bolt button appears beside send. Held messages are client-side (never sent yet) and show as chips above the input — the ✕ is a true cancel. They drain FIFO when the turn ends. `/steer` and `/queue` commands unchanged.
+- **Activity chips above the composer** (official pill pattern): background tasks (v0.7.0), running subagents (opens the Children sheet), and task progress (opens a Tasks sheet; driven by the live todo state, no extra RPC).
+- Device-verified on Pixel 8: inline THINKING + status line with no docked panel, queue chip appears mid-turn and cancels, card collapses to THOUGHT at turn end.
+
 ## v0.7.0 (vc60) — background work, official attach menu, multi-image
 
 More ports from the official client (from Jeff's screenshots):
