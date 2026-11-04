@@ -108,7 +108,10 @@ import dev.snipme.highlights.Highlights
 import dev.snipme.highlights.model.BoldHighlight
 import dev.snipme.highlights.model.ColorHighlight
 import dev.snipme.highlights.model.SyntaxLanguage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -133,6 +136,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.hermex.v3.di.AppModule
 import com.hermex.v3.feature.settings.SettingsRepository
 import com.hermex.v3.AppState
 import com.hermex.v3.assistant.TtsPlayback
@@ -2484,13 +2488,61 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
  * Tool detail bottom sheet (v0.6.0): Input / Output / Call ID / Context
  * sections, each with its own Copy action — the official client's drill-down.
  */
+/**
+ * v0.8.2: process-wide cache of the gateway's tool definitions (name ->
+ * toolset + one-line description) so a tapped tool row can explain what the
+ * tool IS, like the official app. Fetched lazily on first sheet open; the
+ * registry is static per gateway run, so one fetch per app process is enough.
+ */
+private object ToolDocs {
+    data class Doc(val toolset: String, val description: String)
+    // Snapshot state, not a plain field: a read during composition subscribes, so
+    // a sheet opened while the fetch is in flight recomposes when it lands
+    // (a plain @Volatile field only showed descriptions on the SECOND open).
+    private val _state = androidx.compose.runtime.mutableStateOf<Map<String, Doc>?>(null)
+    val map: Map<String, Doc>? get() = _state.value
+    @Volatile private var loading = false
+
+    fun loadAsync() {
+        if (_state.value != null || loading) return
+        loading = true
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val r = AppModule.provideRpcClient().toolsShow()
+                val m = HashMap<String, Doc>()
+                r["sections"]?.jsonArray?.forEach { s ->
+                    val o = s as? kotlinx.serialization.json.JsonObject ?: return@forEach
+                    val toolset = o["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                    o["tools"]?.jsonArray?.forEach { t ->
+                        val to = t as? kotlinx.serialization.json.JsonObject ?: return@forEach
+                        val n = to["name"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+                        val d = to["description"]?.jsonPrimitive?.contentOrNull ?: ""
+                        m[n] = Doc(toolset, d)
+                    }
+                }
+                if (m.isNotEmpty()) _state.value = m
+            } catch (_: Exception) {
+                // Sheet degrades to no-description; retry on next open.
+            } finally {
+                loading = false
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ToolDetailSheet(toolCall: UiToolCall, onDismiss: () -> Unit) {
+    LaunchedEffect(Unit) { ToolDocs.loadAsync() }
+    val doc = ToolDocs.map?.get(toolCall.toolName)
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // NO verticalScroll here: this Material3 ModalBottomSheet measures
+                // its content slot with infinite maxHeight (the sheet scrolls itself
+                // via the drag gesture), and any verticalScroll under it crashes the
+                // app at measure time. Long output stays capped by the preview limits.
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 28.dp),
         ) {
@@ -2500,11 +2552,39 @@ private fun ToolDetailSheet(toolCall: UiToolCall, onDismiss: () -> Unit) {
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(12.dp))
-            if (!toolCall.args.isNullOrBlank()) {
-                SheetSection(label = "Input", value = toolCall.args)
+            // v0.8.2: what exactly this tool IS — the gateway's own one-line
+            // description + its toolset, shown under the title.
+            if (doc != null && doc.description.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = doc.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(4.dp))
+                if (doc.toolset.isNotBlank()) {
+                    Text(
+                        text = "toolset: ${doc.toolset}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
             }
-            val output = toolCall.result ?: toolCall.summary ?: toolCall.preview
+            Spacer(Modifier.height(12.dp))
+            // History rows sometimes carry the command only in preview (empty
+            // args on the assistant row) — show it as Input, like the row does.
+            val argsText = toolCall.args?.takeIf { it.isNotBlank() }
+            val inputText = argsText ?: toolCall.preview?.takeIf { it.isNotBlank() }
+            if (inputText != null) {
+                SheetSection(label = "Input", value = inputText)
+            }
+            // preview counts as Output only when it wasn't consumed as Input.
+            val output = toolCall.result ?: toolCall.summary
+                ?: toolCall.preview?.takeIf { argsText != null }
             if (!output.isNullOrBlank()) {
                 SheetSection(label = "Output", value = output)
             }

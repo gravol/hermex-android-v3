@@ -1,4 +1,16 @@
 ## v0.6.0 (vc59) — official-app chat rendering
+## v0.8.2 (vc63)
+- Tool detail sheets now explain what the tool IS: one-line description + toolset,
+  fetched from the gateway's own registry (tools.show) and cached per app run —
+  covers MCP/plugin tools, not just built-ins.
+- Fix: history rows whose command lives only in preview now show it as Input
+  (previously the Input section silently disappeared from some history sheets).
+- Fix: detail sheet no longer crashes the app — this Material3 ModalBottomSheet
+  measures content with infinite height; a verticalScroll under it dies at
+  measure time (the sheet scrolls via its own drag gesture).
+- Tool registry cache is snapshot state so a sheet opened mid-fetch recomposes
+  when the descriptions land (was: visible only on second open).
+
 ## v0.8.1 (vc62) — per-item cards, interleaved thoughts, merged detail sheets
 
 - **Clear bubbles per item**: every tool call and every thought is its own bordered rounded card (fill + hairline border), matching the official app's chat density.

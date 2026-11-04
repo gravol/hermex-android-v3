@@ -1003,6 +1003,10 @@ class JsonRpcClient(
     // process.list/process.kill are live-session RPCs (live_session=True server-side):
     // they resolve the attached session, so pass the LIVE sid (same rule as subagent.*).
 
+    /** All assembled tool definitions grouped by toolset: name + one-line description.
+     *  Session-independent (v0.8.2: tool detail sheets explain what each tool IS). */
+    suspend fun toolsShow(): JsonObject = request("tools.show", mapOf("session_id" to ""))
+
     /** Background processes owned by this session (command, status, output tail). */
     suspend fun processList(sessionId: String): JsonObject =
         request("process.list", mapOf("session_id" to sessionId))
