@@ -74,6 +74,10 @@ data class ChatUiState(
     // Non-empty = the Tasks card shows above the message list.
     val todos: List<UiTodo> = emptyList(),
     val todosExpanded: Boolean = false,
+    // v0.8.0: messages held client-side until the current turn ends (queued
+    // chips above the composer, each cancellable). Never sent to the gateway
+    // until drained.
+    val queuedMessages: List<String> = emptyList(),
     // True when a turn completed while the chat screen wasn't visible (v0.1.60).
     // Shown as a banner on re-entry until dismissed.
     val completedWhileAway: Boolean = false,

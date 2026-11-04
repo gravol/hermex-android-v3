@@ -34,6 +34,11 @@ abstract class ChatViewModelContract(application: Application) : AndroidViewMode
     /** Send a message with an attached image (base64, pre-downscaled). */
     open fun sendMessageWithImage(text: String, imageBase64: String, filename: String?) {}
     open fun sendMessageWithImages(text: String, imagesB64: List<String>) {}
+    // v0.8.0: client-side message queue — hold a send until the current turn
+    // ends, cancel it before it drains. (The gateway's own busy-queue has no
+    // cancel RPC; a locally-held message is cancellable by construction.)
+    open fun queueMessage(text: String) {}
+    open fun cancelQueued(index: Int) {}
     /** Send a message with an attached file (base64 + mime), uploaded via `file.attach`. */
     open fun sendMessageWithFile(text: String, fileBase64: String, mimeType: String, filename: String?) {}
     /** Report whether the chat screen is currently visible (background-turn tracking). */

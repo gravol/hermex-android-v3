@@ -78,6 +78,9 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Checklist
+import androidx.compose.material.icons.outlined.Bolt
 import com.mikepenz.markdown.compose.components.MarkdownComponentModel
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
@@ -280,10 +283,12 @@ fun ChatScreen(
     // ── Attach chooser (v0.7.0: official-app style menu) ──
     var showAttachSheet by remember { mutableStateOf(false) }
     var showDrawingDialog by remember { mutableStateOf(false) }
-    // ── Background work (v0.7.0) ──
+    // ── Background work (v0.7.0) + activity chips (v0.8.0) ──
     var showBgSheet by remember { mutableStateOf(false) }
-    val (bgProcs, bgRefresh) = rememberBgTasks(sessionId, enabled = true)
+    var showTodoSheet by remember { mutableStateOf(false) }
+    val (bgProcs, runningChildren, bgRefresh) = rememberBgTasks(sessionId, enabled = true)
     val bgRunning = bgProcs.count { it.running }
+    val openTodos = state.todos.count { !it.isDone }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     val cameraPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture(),
@@ -681,10 +686,13 @@ fun ChatScreen(
             snapshotFlow {
                 val s = viewModel.uiState
                 val last = s.messages.last()
-                Triple(
+                // v0.8.0: thinking growth is now visible inline — the list must
+                // follow it too (the docked panel used to own that scroll).
+                listOf(
                     s.messages.size,
                     last.content.length,
                     last.toolCalls.size,
+                    last.thinkingText?.length ?: 0,
                 )
             }
                 .distinctUntilChanged()
@@ -1020,6 +1028,61 @@ fun ChatScreen(
                             showBgSheet = true
                         }
                     }
+                    // v0.8.0: subagents + tasks ride the same pinned pattern.
+                    if (runningChildren > 0) {
+                        PinnedActivityChip(
+                            icon = Icons.Outlined.Groups,
+                            text = "Running $runningChildren subagent${if (runningChildren == 1) "" else "s"}",
+                            spin = true,
+                            onClick = { showChildren = true },
+                        )
+                    }
+                    if (state.todos.isNotEmpty() && openTodos > 0) {
+                        PinnedActivityChip(
+                            icon = Icons.Outlined.Checklist,
+                            text = "Tasks ${state.todos.count { it.isDone }}/${state.todos.size}",
+                            spin = false,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            onClick = { showTodoSheet = true },
+                        )
+                    }
+                    // v0.8.0: queued messages (official style) — ⚡ + text + ✕.
+                    // Held client-side: ✕ is a true cancel, nothing was sent.
+                    state.queuedMessages.forEachIndexed { idx, qtext ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 2.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Outlined.Bolt,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.tertiary,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = qtext,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Cancel queued message",
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { viewModel.cancelQueued(idx) },
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     // Pending image thumbnails (v0.7.0: multi, removable)
                     if (pendingImages.isNotEmpty()) {
                         Row(
@@ -1338,8 +1401,34 @@ fun ChatScreen(
                                         onClick = { viewModel.setYolo(!state.yoloEnabled) },
                                     )
                                     Spacer(Modifier.width(6.dp))
-                                    // Send — accent circle with up arrow (WebUI-style)
+                                    // v0.8.0: queue-this-until-turn-ends (only
+                                    // while a turn is running). The held message
+                                    // shows as a cancellable chip above the input.
                                     val canSend = (composerText.isNotBlank() || pendingImages.isNotEmpty()) && !isTranscribing
+                                    if (state.isStreaming) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(42.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (canSend) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.85f)
+                                                    else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.3f),
+                                                )
+                                                .clickable(enabled = canSend) {
+                                                    viewModel.queueMessage(composerText)
+                                                    composerText = ""
+                                                },
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.Bolt,
+                                                contentDescription = "Queue after this turn",
+                                                tint = MaterialTheme.colorScheme.onTertiary,
+                                            )
+                                        }
+                                        Spacer(Modifier.width(6.dp))
+                                    }
+                                    // Send — accent circle with up arrow (WebUI-style)
                                     Box(
                                         modifier = Modifier
                                             .size(42.dp)
@@ -1439,6 +1528,12 @@ fun ChatScreen(
                     }
                 }
             }
+            // v0.8.0: inline live-turn status inputs (used by the streaming
+            // message item's LiveTurnStatusLine). v0.1.110: prefer
+            // server-reported liveTokPerSec, fall back to the char-count
+            // estimate (streamTokPerSec).
+            val displayTokPerSec = state.liveTokPerSec?.takeIf { it > 0f } ?: streamTokPerSec
+            val isServerReported = state.liveTokPerSec != null && state.liveTokPerSec!! > 0f
             when {
                 state.isLoading && state.messages.isEmpty() -> {
                     Box(
@@ -1524,16 +1619,35 @@ fun ChatScreen(
                             // box above the tools+answer (during streaming it
                             // lives in the docked live panel instead). Hidden
                             // when the thinking toggle is off (v0.1.97).
+                            // v0.8.0: live turn status (tok/s, thinking speed,
+                            // elapsed) as a compact line at the head of the
+                            // streaming item — the docked panel's readout,
+                            // inline. Replaces the v0.1.64 bottom panel.
+                            if (msg.isStreaming) {
+                                LiveTurnStatusLine(
+                                    thinking = msg.thinkingText.orEmpty(),
+                                    tokPerSec = displayTokPerSec,
+                                    thinkingTokPerSec = streamThinkingTokPerSec,
+                                    isServerReported = isServerReported,
+                                )
+                            }
+                            // v0.8.0: thinking renders INLINE in the transcript,
+                            // live while streaming (expanded THINKING card) and
+                            // collapsed as a THOUGHT card after the turn. The
+                            // docked bottom panel is gone — one scroller, one
+                            // source, content stacks below it like the official app.
                             if (msg.role == "assistant" && msg.thinkingText?.isNotBlank() == true &&
-                                !msg.isStreaming && showThinking
+                                showThinking
                             ) {
-                                ThoughtCard(text = msg.thinkingText)
+                                ThoughtCard(text = msg.thinkingText, streaming = msg.isStreaming)
                             }
 
                             // v0.6.0: tool calls render as compact one-line rows
                             // (icon badge + verb + mono args); tap opens the
                             // Input/Output/Call ID/Context bottom sheet.
-                            if (msg.role == "assistant" && msg.toolCalls.isNotEmpty() && !msg.isStreaming && showToolCalls) {
+                            // v0.8.0: live tool calls too — single rows in flow,
+                            // no fixed box, no max-2 cap.
+                            if (msg.role == "assistant" && msg.toolCalls.isNotEmpty() && showToolCalls) {
                                 ToolCallList(toolCalls = msg.toolCalls)
                             }
 
@@ -1555,31 +1669,9 @@ fun ChatScreen(
                 }
             }
 
-            // Docked live-activity panel (v0.1.64): while a turn is running,
-            // thinking + tool calls stream in a small scrollable box above the
-            // composer. On completion the panel vanishes and the finished
-            // message shows tools + thinking above the final answer instead.
-            val liveMsg = state.messages.lastOrNull { it.isStreaming }
-            // v0.1.106: panel is now always visible while streaming — it hosts
-            // the tok/s readout; the thinking/tools sections inside still
-            // respect the visibility toggles.
-            // v0.1.110: use server-reported liveTokPerSec when available,
-            // falling back to the char-count estimate (streamTokPerSec).
-            val displayTokPerSec = state.liveTokPerSec?.takeIf { it > 0f } ?: streamTokPerSec
-            val isServerReported = state.liveTokPerSec != null && state.liveTokPerSec!! > 0f
-            val livePanelVisible = state.isStreaming && liveMsg != null
-            if (livePanelVisible) {
-                LiveActivityPanel(
-                    thinking = if (showThinking) liveMsg!!.thinkingText.orEmpty() else "",
-                    toolCalls = if (showToolCalls) liveMsg.toolCalls else emptyList(),
-                    showTools = showToolCalls,
-                    showThinking = showThinking,
-                    tokPerSec = displayTokPerSec,
-                    thinkingTokPerSec = streamThinkingTokPerSec,
-                    isServerReported = isServerReported,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
+            // v0.8.0: the docked live-activity panel (v0.1.64) is gone —
+            // thinking, tool rows, and the tok/s readout now render INLINE in
+            // the streaming message item above (see displayTokPerSec above).
         }
     }
 
@@ -1615,6 +1707,10 @@ fun ChatScreen(
             },
             onDismiss = { showBgSheet = false },
         )
+    }
+    // ── Tasks sheet (v0.8.0) ──
+    if (showTodoSheet) {
+        TodoSheet(todos = state.todos, onDismiss = { showTodoSheet = false })
     }
 
     // ── Context Details Panel (WebUI): tap the ring to open details + compress ──
@@ -2134,8 +2230,13 @@ private fun toolBadgeIcon(toolName: String): androidx.compose.ui.graphics.vector
  * collapsed shows one italic line + ellipsis, expanded scrolls the full text.
  */
 @Composable
-private fun ThoughtCard(text: String) {
+private fun ThoughtCard(text: String, streaming: Boolean = false) {
     var expanded by remember { mutableStateOf(false) }
+    // v0.8.0: while the turn is live the card IS the thinking box — expanded,
+    // uncapped, scrolling with the main list (no nested scroller). At turn end
+    // `streaming` flips false and the card collapses to the normal one-line
+    // THOUGHT preview, matching the official app.
+    val effectiveExpanded = if (streaming) true else expanded
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -2147,19 +2248,27 @@ private fun ThoughtCard(text: String) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "THOUGHT",
+                    text = if (streaming) "THINKING" else "THOUGHT",
                     style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.5.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (streaming) {
+                    Spacer(Modifier.width(8.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(11.dp),
+                        strokeWidth = 1.5.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 Icon(
-                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = if (expanded) "Collapse thinking" else "Expand thinking",
+                    imageVector = if (effectiveExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (effectiveExpanded) "Collapse thinking" else "Expand thinking",
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
                 )
             }
-            if (!expanded) {
+            if (!effectiveExpanded) {
                 Text(
                     text = text,
                     style = MaterialTheme.typography.bodySmall.copy(
@@ -2168,6 +2277,18 @@ private fun ThoughtCard(text: String) {
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                )
+            } else if (streaming) {
+                // Live: full text inline, no height cap, no inner scroll — the
+                // main list follows it (single scroller, single source).
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontStyle = FontStyle.Italic,
+                        lineHeight = 17.sp,
+                    ),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                 )
             } else {
@@ -2649,21 +2770,16 @@ private fun formatTokens(tokens: Long): String {
 }
 
 /**
- * Docked live-activity panel (v0.1.64): small scrollable box above the composer
- * showing thinking + tool calls as they stream, while the answer grows above it.
- * Disappears when the turn completes (the finished message then shows tools +
- * thinking above the final answer instead).
+ * v0.8.0: compact live-turn status line rendered at the head of the streaming
+ * message item (replaces the docked panel's header readout): pulsing dot,
+ * thinking speed + elapsed while reasoning, streaming tok/s on the right.
  */
 @Composable
-private fun LiveActivityPanel(
+private fun LiveTurnStatusLine(
     thinking: String,
-    toolCalls: List<UiToolCall>,
-    showTools: Boolean = true,
-    showThinking: Boolean = true,
-    tokPerSec: Float = 0f,
-    thinkingTokPerSec: Float = 0f,
-    isServerReported: Boolean = false,
-    modifier: Modifier = Modifier,
+    tokPerSec: Float,
+    thinkingTokPerSec: Float,
+    isServerReported: Boolean,
 ) {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -2672,12 +2788,7 @@ private fun LiveActivityPanel(
             now = System.currentTimeMillis()
         }
     }
-    // v0.1.96: tools are their own labeled section, and disappear entirely
-    // when the tool-call toggle is off.
-    val toolsVisible = showTools && toolCalls.isNotEmpty()
-    // v0.1.97: thinking section disappears when the thinking toggle is off.
-    val thinkingVisible = showThinking && thinking.isNotBlank()
-    // v0.1.115: track how long the model has been thinking.
+    val thinkingVisible = thinking.isNotBlank()
     var thinkingStartedAt by remember { mutableStateOf<Long?>(null) }
     if (thinkingVisible) {
         if (thinkingStartedAt == null) thinkingStartedAt = System.currentTimeMillis()
@@ -2690,257 +2801,55 @@ private fun LiveActivityPanel(
     fun formatElapsed(ms: Long): String {
         val s = ms / 1000
         val m = s / 60
-        val sec = s % 60
-        return if (m > 0) "${m}m ${sec}s" else "${sec}s"
+        return if (m > 0) "${m}m ${s % 60}s" else "${s}s"
     }
-    // v0.1.138: live panel is dedicated to thinking — cap visible tool rows at
-    // two, with an expand toggle so the rest are still reachable (not hidden).
-    var showAllTools by remember { mutableStateOf(false) }
-    val maxVisibleTools = 2
-    val visibleToolCount = if (showAllTools) toolCalls.size else kotlin.math.min(maxVisibleTools, toolCalls.size)
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
-        // v0.1.95: live activity panel is a themeable extra surface (tool cards)
-        color = LocalUiSurfaces.current.toolCard,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
-    ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "Live activity",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                // v0.1.107: thinking speed beside the label while reasoning
-                // flows (fades out via EMA once thinking stops).
-                if (thinkingTokPerSec > 0f) {
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "thinking ${String.format("%.1f", thinkingTokPerSec)} tok/s",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        maxLines = 1,
-                    )
-                }
-                // v0.1.115: show how long the model has been thinking.
-                if (thinkingVisible && thinkingElapsedMs > 0) {
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = formatElapsed(thinkingElapsedMs),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                // v0.1.106/110: live streaming speed — server-reported (no ≈)
-                // when available, estimated (≈) from char-count fallback.
-                Text(
-                    text = "${if (isServerReported) "" else "≈"}${String.format("%.1f", tokPerSec)} tok/s",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (tokPerSec > 0f) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    },
-                )
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-            val listState = rememberLazyListState()
-            // v0.1.161: measured pixel height of the growing THINKING item
-            // (captured via BoxWithConstraints during layout). Used to follow
-            // its bottom edge without racing live layoutInfo timing.
-            var thinkingHeight by remember { mutableStateOf(0f) }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 200.dp),
-            ) {
-                if (thinkingVisible) {
-                    item(key = "thinking") {
-                        BoxWithConstraints(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        ) {
-                            // Record the measured height so the scroll effect
-                            // can pin the bottom edge of a tall single item.
-                            thinkingHeight = this.minHeight.value.toFloat()
-                            Column {
-                                Text(
-                                    text = "THINKING",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = thinking,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    lineHeight = 15.sp,
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                }
-                }
-                // v0.1.96: TOOLS section — its own header (matching the finished
-                // ToolScrollBox), visually separated from the THINKING block.
-                // v0.1.138: capped at 2 visible rows with an expand toggle so the
-                // live panel stays focused on thinking, not a tool dump.
-                if (toolsVisible) {
-                    item(key = "tools-header") {
-                        Column {
-                            if (thinkingVisible) {
-                                HorizontalDivider(
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-                                )
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                // v0.1.107: working count folded in here (was a
-                                // header counter; moved to make room for speeds).
-                                val working = toolCalls.count { !it.completed }
-                                Text(
-                                    text = "TOOLS · ${toolCalls.size}" +
-                                        if (working > 0) " · $working working" else "",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Spacer(Modifier.weight(1f))
-                                // v0.1.138: expand/collapse when there's more than the
-                                // capped 2 visible rows.
-                                if (toolCalls.size > maxVisibleTools) {
-                                    Text(
-                                        text = if (showAllTools) "Show less" else "Show ${toolCalls.size - maxVisibleTools} more",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    // itemsIndexed (positional key): tool ids can duplicate (history
-                    // replay defaults them to "tc") — an explicit key would crash.
-                    // v0.1.138: only render the first N (or all when expanded).
-                    val cappedTools = if (showAllTools) toolCalls else toolCalls.take(maxVisibleTools)
-                    itemsIndexed(cappedTools) { _, tc ->
-                        ToolActivityRow(toolCall = tc, now = now)
-                    }
-                }
-            }
-            // Auto-scroll the panel to the newest activity.
-            // v0.1.161: when thinking is the only item (no tool calls yet), it's
-            // a single tall item at index 0; scrollToItem(0) pins its TOP, so new
-            // text streaming past the 200.dp viewport scrolled off-screen and only
-            // started tracking once a tool call added later items. In that
-            // pure-thinking case scroll by the measured height minus the viewport
-            // so its bottom edge is always visible (measured via BoxWithConstraints).
-            LaunchedEffect(thinking.length, toolCalls.size, toolsVisible, showThinking, showAllTools) {
-                val thinkingShown = showThinking && thinking.isNotBlank()
-                val headerCount = (if (thinkingShown) 1 else 0) + (if (toolsVisible) 1 else 0)
-                val count = (if (toolsVisible) visibleToolCount else 0) + headerCount
-                if (count > 0) {
-                    // Pure-thinking case: thinking is the only item and grows in place.
-                    // v0.1.163: self-healing bottom-pin. scrollToItem(0) aligns the item
-                    // TOP, so as a tall single item grows past the 200.dp viewport its new
-                    // content below the fold scrolls off until something re-pins the bottom.
-                    // The old code relied solely on scrollBy(thinkingHeight - viewportHeight);
-                    // thinkingHeight (BoxWithConstraints minHeight) is authoritative but can go
-                    // stale if the item isn't laid out every frame, so drift accumulated with no
-                    // correction path — it only "recovered" when a tool call flipped to the other
-                    // branch. Fix: after scrollToItem (which forces a layout pass), read the actual
-                    // item bottom from live layoutInfo and scrollBy the overflow — the same proven
-                    // pattern autoScrollToBottom() uses for the main list — then cross-check
-                    // thinkingHeight so any residual frame drift self-corrects instead of piling up.
-                    if (!toolsVisible && thinkingShown) {
-                        listState.scrollToItem(0)
-                        val layoutInfo = listState.layoutInfo
-                        val viewportHeight = layoutInfo.viewportSize.height.toFloat()
-                        val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
-                        val overflow = if (lastVisible != null) {
-                            (lastVisible.offset + lastVisible.size).toFloat() - viewportHeight
-                        } else 0f
-                        val bestOverflow = overflow.coerceAtLeast(
-                            if (thinkingHeight > viewportHeight) thinkingHeight - viewportHeight else 0f
-                        )
-                        if (bestOverflow > 0f) {
-                            listState.scrollBy(bestOverflow)
-                        }
-                    } else {
-                        listState.scrollToItem(count - 1)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** One compact tool row: icon · name · elapsed · spinner-or-check. */
-@Composable
-private fun ToolActivityRow(toolCall: UiToolCall, now: Long) {
+    val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "dot",
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = toolIcon(toolCall.toolName),
-            style = MaterialTheme.typography.labelMedium,
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = pulse)),
         )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = toolCall.toolName,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = formatElapsed(toolCall.startedAt, now, toolCall.completed),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.width(6.dp))
-        if (toolCall.completed) {
+        Spacer(Modifier.width(8.dp))
+        if (thinkingTokPerSec > 0f) {
             Text(
-                text = "✓",
-                style = MaterialTheme.typography.labelMedium,
-                color = Color(0xFF4CAF50),
-            )
-        } else {
-            CircularProgressIndicator(
-                modifier = Modifier.size(12.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.primary,
+                text = "thinking ${String.format("%.1f", thinkingTokPerSec)} tok/s",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                maxLines = 1,
             )
         }
+        if (thinkingVisible && thinkingElapsedMs > 0) {
+            if (thinkingTokPerSec > 0f) Spacer(Modifier.width(8.dp))
+            Text(
+                text = formatElapsed(thinkingElapsedMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = "${if (isServerReported) "" else "≈"}${String.format("%.1f", tokPerSec)} tok/s",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (tokPerSec > 0f) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            },
+        )
     }
 }
-
-
 
 /**
  * Downscale an image URI to a Bitmap (<=1600px). Returns null on failure. Runs on

@@ -12,6 +12,8 @@ import com.hermex.v3.di.AppModule
 import com.hermex.core.network.DashboardApiClient
 import com.hermex.core.network.NetworkResult
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -666,6 +668,53 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
             }
         }
         return recovered
+    }
+
+    // ── v0.8.0: client-side cancellable message queue ──
+    // A message held here has NOT been sent: the ✕ on its chip is a true
+    // cancel. The gateway's own busy-queue (server auto-queue) has no cancel
+    // RPC, which is exactly why this path exists client-side.
+    private var queueDrainerStarted = false
+
+    override fun queueMessage(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isBlank() || sessionId.isEmpty()) return
+        // Idle (or /stop-style command): nothing to wait for — send now.
+        if (!uiState.isStreaming) {
+            sendMessage(trimmed)
+            return
+        }
+        uiState = uiState.copy(queuedMessages = uiState.queuedMessages + trimmed)
+        startQueueDrainer()
+    }
+
+    override fun cancelQueued(index: Int) {
+        val q = uiState.queuedMessages
+        if (index in q.indices) {
+            uiState = uiState.copy(queuedMessages = q.filterIndexed { i, _ -> i != index })
+        }
+    }
+
+    private fun startQueueDrainer() {
+        if (queueDrainerStarted) return
+        queueDrainerStarted = true
+        viewModelScope.launch {
+            var wasStreaming = true
+            snapshotFlow { uiState.isStreaming }
+                .distinctUntilChanged()
+                .collect { streaming ->
+                    // true → false edge: drain ONE queued message (FIFO). The
+                    // next turn-end picks up the rest via the same edge.
+                    if (wasStreaming && !streaming) {
+                        val q = uiState.queuedMessages
+                        if (q.isNotEmpty()) {
+                            uiState = uiState.copy(queuedMessages = q.drop(1))
+                            sendMessage(q.first())
+                        }
+                    }
+                    wasStreaming = streaming
+                }
+        }
     }
 
     override fun sendMessage(text: String) {

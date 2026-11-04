@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Undo
@@ -113,11 +114,12 @@ private fun parseProcs(payload: JsonObject): List<BgProc> = try {
     emptyList()
 }
 
-/** Polls process.list for the session; call [refresh] to force an immediate read. */
+/** Polls process.list + subagent.list for the session; [refresh] forces an immediate read. */
 @Composable
-fun rememberBgTasks(sessionDbKey: String, enabled: Boolean): Pair<List<BgProc>, () -> Unit> {
+fun rememberBgTasks(sessionDbKey: String, enabled: Boolean): Triple<List<BgProc>, Int, () -> Unit> {
     val scope = rememberCoroutineScope()
     var procs by remember(sessionDbKey) { mutableStateOf<List<BgProc>>(emptyList()) }
+    var runningChildren by remember(sessionDbKey) { mutableStateOf(0) }
     var pollJob by remember(sessionDbKey) { mutableStateOf<Job?>(null) }
 
     fun fetch() {
@@ -128,6 +130,14 @@ fun rememberBgTasks(sessionDbKey: String, enabled: Boolean): Pair<List<BgProc>, 
                 val resume = rpc.sessionResume(sessionDbKey, omitMessages = true)
                 val liveSid = resume.session_id.ifBlank { sessionDbKey }
                 procs = parseProcs(rpc.processList(liveSid))
+                // v0.8.0: running delegated children ride the same tick —
+                // the subagent chip counts them and opens the Children sheet.
+                runningChildren = try {
+                    rpc.subagentList(liveSid)["subagents"]?.jsonArray?.count { el ->
+                        val st = (el as? JsonObject)?.get("status")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        st.isBlank() || st.lowercase() in runningStatuses || st.lowercase() == "running"
+                    } ?: 0
+                } catch (_: Exception) { runningChildren }
             } catch (_: Exception) {
                 // Transient (session reaped, network) — keep the last snapshot.
             }
@@ -149,7 +159,7 @@ fun rememberBgTasks(sessionDbKey: String, enabled: Boolean): Pair<List<BgProc>, 
             onDispose { pollJob?.cancel() }
         }
     }
-    return procs to refresh
+    return Triple(procs, runningChildren, refresh)
 }
 
 /** Kill one background task (resume for the live sid, then process.kill). */
@@ -166,9 +176,27 @@ suspend fun killBgTask(sessionDbKey: String, procId: String) {
 
 @Composable
 fun BackgroundTaskChip(count: Int, onClick: () -> Unit) {
-    // The official app's animated "Running N background task" pill. The icon
-    // spins while anything runs — the only honest animation is a busy one.
-    val transition = rememberInfiniteTransition(label = "bgspin")
+    PinnedActivityChip(
+        icon = Icons.Outlined.GraphicEq,
+        text = "Running $count background task${if (count == 1) "" else "s"}",
+        spin = true,
+        onClick = onClick,
+    )
+}
+
+/**
+ * v0.8.0: generic pinned activity chip above the composer (background tasks,
+ * subagents, tasks) — the official app's "Running N …" pill pattern.
+ */
+@Composable
+fun PinnedActivityChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String,
+    onClick: () -> Unit,
+    spin: Boolean = false,
+    tint: Color = MaterialTheme.colorScheme.primary,
+) {
+    val transition = rememberInfiniteTransition(label = "chipspin")
     val angle by transition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
@@ -188,25 +216,83 @@ fun BackgroundTaskChip(count: Int, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = Icons.Outlined.GraphicEq,
+                imageVector = icon,
                 contentDescription = null,
                 modifier = Modifier
                     .size(18.dp)
-                    .rotate(angle),
-                tint = MaterialTheme.colorScheme.primary,
+                    .then(if (spin) Modifier.rotate(angle) else Modifier),
+                tint = tint,
             )
             Spacer(Modifier.width(10.dp))
             Text(
-                text = "Running $count background task${if (count == 1) "" else "s"}",
+                text = text,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "Open background work",
+                contentDescription = "Open",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/** v0.8.0: read-only task-list sheet (the Tasks chip target). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TodoSheet(todos: List<com.hermex.v3.feature.chat.UiTodo>, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+        ) {
+            Text(
+                text = "Tasks",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Spacer(Modifier.height(14.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    todos.forEach { t ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            val (icon, tint) = when {
+                                t.isDone -> Icons.Filled.CheckCircle to Color(0xFF43A047)
+                                t.isActive -> Icons.Filled.PlayCircle to MaterialTheme.colorScheme.primary
+                                else -> Icons.Filled.CheckCircle to MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            }
+                            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = tint)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = t.content,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    textDecoration = if (t.isDone) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (t.isDone) 0.55f else 1f),
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
