@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.outlined.Handyman
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.South
 import androidx.compose.material.icons.outlined.North
 import androidx.compose.material.icons.outlined.AttachMoney
@@ -515,6 +516,8 @@ fun ChatScreen(
 
     // ── Model picker (v0.1.88) ──
     var showModelPicker by remember { mutableStateOf(false) }
+    // v0.5.9: Children sheet — live delegated children of this session.
+    var showChildren by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<UiMessage?>(null) }
 
     // ── Context details panel (WebUI): tap the ring to open a details card
@@ -944,6 +947,14 @@ fun ChatScreen(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
                             },
+                        )
+                    }
+                    // v0.5.9: delegated-children view for this session.
+                    IconButton(onClick = { showChildren = true }) {
+                        Icon(
+                            imageVector = Icons.Outlined.AccountTree,
+                            contentDescription = "Children",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                         )
                     }
                     if (!state.isStreaming && state.messages.any { it.role == "assistant" }) {
@@ -1504,6 +1515,19 @@ fun ChatScreen(
         ModelPickerSheet(
             viewModel = viewModel,
             onDismiss = { showModelPicker = false },
+        )
+    }
+
+    // ── Children sheet (v0.5.9): live delegated children of this session ──
+    if (showChildren) {
+        ChildrenSheet(
+            sessionDbKey = sessionId,
+            onDismiss = { showChildren = false },
+            onWatch = { childSid, goal ->
+                val enc = java.net.URLEncoder.encode(goal.ifBlank { "Child" }, "UTF-8")
+                onNavigate("chat/$childSid/$enc")
+                showChildren = false
+            },
         )
     }
 
