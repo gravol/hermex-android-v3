@@ -999,6 +999,18 @@ class JsonRpcClient(
     suspend fun subagentList(sessionId: String): JsonObject =
         request("subagent.list", mapOf("session_id" to sessionId))
 
+    // ── Background processes (v0.7.0: Background Work sheet) ──
+    // process.list/process.kill are live-session RPCs (live_session=True server-side):
+    // they resolve the attached session, so pass the LIVE sid (same rule as subagent.*).
+
+    /** Background processes owned by this session (command, status, output tail). */
+    suspend fun processList(sessionId: String): JsonObject =
+        request("process.list", mapOf("session_id" to sessionId))
+
+    /** Kill ONE background process this session owns. */
+    suspend fun processKill(sessionId: String, processId: String): JsonObject =
+        request("process.kill", mapOf("session_id" to sessionId, "process_id" to processId))
+
     /** Tail of a child's live transcript file (may be unavailable/truncated). */
     suspend fun subagentTail(sessionId: String, subagentId: String): JsonObject =
         request("subagent.tail", mapOf("session_id" to sessionId, "subagent_id" to subagentId))

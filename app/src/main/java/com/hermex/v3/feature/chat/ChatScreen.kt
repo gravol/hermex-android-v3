@@ -33,6 +33,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -255,29 +256,34 @@ fun ChatScreen(
         }
     }
 
-    // ── Photo attach state ──
-    var pendingImageB64 by remember { mutableStateOf<String?>(null) }
-    // Render the thumbnail from the already-decoded Bitmap (not the content URI).
+    // ── Photo attach state (v0.7.0: multi-image) ──
+    // Render thumbnails from the already-decoded Bitmaps (not content URIs).
     // The picker-provided URI is ephemeral — the backing file can be replaced or its
     // read permission revoked between pickup and a Compose re-compose, and passing it
     // straight to Coil makes Coil re-read a now-dead URI on every recomposition -> crash.
-    var pendingImageBmp by remember { mutableStateOf<Bitmap?>(null) }
+    var pendingImages by remember { mutableStateOf<List<Pair<Bitmap, String>>>(emptyList()) }
     val imagePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri ->
-        if (uri != null) {
-            val bmp = downscaleAndDecode(context, uri)
-            if (bmp != null) {
-                pendingImageBmp = bmp
-                pendingImageB64 = bitmapToDataUrl(bmp)
-            } else {
+        ActivityResultContracts.PickMultipleVisualMedia(8),
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            val added = uris.mapNotNull { uri ->
+                downscaleAndDecode(context, uri)?.let { it to bitmapToDataUrl(it) }
+            }
+            if (added.isEmpty()) {
                 Toast.makeText(context, "Couldn't read image", Toast.LENGTH_SHORT).show()
+            } else {
+                pendingImages = (pendingImages + added).take(8)
             }
         }
     }
 
-    // ── Attach chooser (v0.1.127): camera / gallery / file ──
+    // ── Attach chooser (v0.7.0: official-app style menu) ──
     var showAttachSheet by remember { mutableStateOf(false) }
+    var showDrawingDialog by remember { mutableStateOf(false) }
+    // ── Background work (v0.7.0) ──
+    var showBgSheet by remember { mutableStateOf(false) }
+    val (bgProcs, bgRefresh) = rememberBgTasks(sessionId, enabled = true)
+    val bgRunning = bgProcs.count { it.running }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     val cameraPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture(),
@@ -287,8 +293,7 @@ fun ChatScreen(
             if (uri != null) {
                 val bmp = downscaleAndDecode(context, uri)
                 if (bmp != null) {
-                    pendingImageBmp = bmp
-                    pendingImageB64 = bitmapToDataUrl(bmp)
+                    pendingImages = pendingImages + (bmp to bitmapToDataUrl(bmp))
                 } else {
                     Toast.makeText(context, "Couldn't read photo", Toast.LENGTH_SHORT).show()
                 }
@@ -504,16 +509,15 @@ fun ChatScreen(
 
     fun sendComposer() {
         val text = composerText
-        val img = pendingImageB64
-        if (text.isBlank() && img == null) return
-        if (img != null) {
-            viewModel.sendMessageWithImage(text, img, "photo_${System.currentTimeMillis()}.jpg")
+        val imgs = pendingImages
+        if (text.isBlank() && imgs.isEmpty()) return
+        if (imgs.isNotEmpty()) {
+            viewModel.sendMessageWithImages(text, imgs.map { it.second })
         } else {
             viewModel.sendMessage(text)
         }
         composerText = ""
-        pendingImageB64 = null
-        pendingImageBmp = null
+        pendingImages = emptyList()
     }
 
     // ── Slash-command completions (v0.1.65) ──
@@ -814,25 +818,55 @@ fun ChatScreen(
         onOpenSession = onOpenSession,
     ) {
     if (showAttachSheet) {
+        // v0.7.0: official-app style attach menu — Camera / Scan Document /
+        // Photo Library / Files / Drawing / Voice Message.
         ModalBottomSheet(onDismissRequest = { showAttachSheet = false }) {
             Column(modifier = Modifier.padding(bottom = 16.dp)) {
-                AttachOption(Icons.Outlined.PhotoCamera, "Take photo") {
+                AttachOption(Icons.Outlined.PhotoCamera, "Camera") {
                     showAttachSheet = false
                     pendingCameraUri = createCameraUri(context)
                     pendingCameraUri?.let { cameraPicker.launch(it) }
                 }
-                AttachOption(Icons.Outlined.PhotoLibrary, "Choose photo") {
+                AttachOption(Icons.Outlined.Description, "Scan Document") {
+                    // v1 routes to the camera (ML Kit document scanner is a
+                    // later upgrade); same capture path as Camera.
+                    showAttachSheet = false
+                    pendingCameraUri = createCameraUri(context)
+                    pendingCameraUri?.let { cameraPicker.launch(it) }
+                }
+                AttachOption(Icons.Outlined.PhotoLibrary, "Photo Library") {
                     showAttachSheet = false
                     imagePicker.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 }
-                AttachOption(Icons.Outlined.Folder, "Choose file") {
+                AttachOption(Icons.Outlined.Folder, "Files") {
                     showAttachSheet = false
                     filePicker.launch(arrayOf("*/*"))
                 }
+                AttachOption(Icons.Outlined.Edit, "Drawing") {
+                    showAttachSheet = false
+                    showDrawingDialog = true
+                }
+                AttachOption(Icons.Outlined.Mic, "Voice Message") {
+                    showAttachSheet = false
+                    val granted = ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.RECORD_AUDIO,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (granted) startRecording()
+                    else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
             }
         }
+    }
+    if (showDrawingDialog) {
+        DrawingDialog(
+            onDismiss = { showDrawingDialog = false },
+            onSave = { bmp ->
+                showDrawingDialog = false
+                pendingImages = pendingImages + (bmp to bitmapToDataUrl(bmp))
+            },
+        )
     }
     Scaffold(
         modifier = Modifier.imePadding(),
@@ -978,34 +1012,68 @@ fun ChatScreen(
                 modifier = Modifier.navigationBarsPadding(),
             ) {
                 Column {
-                    // Pending image thumbnail (removable)
-                    if (pendingImageBmp != null) {
+                    // v0.7.0: animated chip while this session has background
+                    // tasks running; tap opens the Background Work sheet.
+                    if (bgRunning > 0) {
+                        BackgroundTaskChip(count = bgRunning) {
+                            bgRefresh()
+                            showBgSheet = true
+                        }
+                    }
+                    // Pending image thumbnails (v0.7.0: multi, removable)
+                    if (pendingImages.isNotEmpty()) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(start = 12.dp, top = 8.dp, end = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            AsyncImage(
-                                model = pendingImageBmp,
-                                contentDescription = "Attached image",
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 modifier = Modifier
-                                    .size(64.dp)
-                                    .clip(RoundedCornerShape(10.dp)),
-                                contentScale = ContentScale.Crop,
-                            )
-                            Spacer(Modifier.width(8.dp))
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState()),
+                            ) {
+                                pendingImages.forEachIndexed { idx, (bmp, _) ->
+                                    Box {
+                                        AsyncImage(
+                                            model = bmp,
+                                            contentDescription = "Attached image ${idx + 1}",
+                                            modifier = Modifier
+                                                .size(56.dp)
+                                                .clip(RoundedCornerShape(10.dp)),
+                                            contentScale = ContentScale.Crop,
+                                        )
+                                        // Per-thumbnail remove
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(2.dp)
+                                                .clip(androidx.compose.foundation.shape.CircleShape)
+                                                .background(Color.Black.copy(alpha = 0.65f))
+                                                .clickable {
+                                                    pendingImages = pendingImages.filterIndexed { i, _ -> i != idx }
+                                                },
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Close,
+                                                contentDescription = "Remove image ${idx + 1}",
+                                                modifier = Modifier
+                                                    .size(14.dp)
+                                                    .padding(1.dp),
+                                                tint = Color.White,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                             Text(
-                                text = "Image attached",
+                                text = "${pendingImages.size} attached",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
                             )
-                            IconButton(onClick = {
-                                pendingImageB64 = null
-                                pendingImageBmp = null
-                            }) {
-                                Icon(Icons.Default.Close, contentDescription = "Remove image")
+                            IconButton(onClick = { pendingImages = emptyList() }) {
+                                Icon(Icons.Default.Close, contentDescription = "Remove all images")
                             }
                         }
                     }
@@ -1271,7 +1339,7 @@ fun ChatScreen(
                                     )
                                     Spacer(Modifier.width(6.dp))
                                     // Send — accent circle with up arrow (WebUI-style)
-                                    val canSend = (composerText.isNotBlank() || pendingImageB64 != null) && !isTranscribing
+                                    val canSend = (composerText.isNotBlank() || pendingImages.isNotEmpty()) && !isTranscribing
                                     Box(
                                         modifier = Modifier
                                             .size(42.dp)
@@ -1533,6 +1601,19 @@ fun ChatScreen(
                 onNavigate("chat/$childSid/$enc")
                 showChildren = false
             },
+        )
+    }
+    // ── Background work sheet (v0.7.0) ──
+    if (showBgSheet) {
+        BackgroundWorkSheet(
+            procs = bgProcs,
+            onKill = { procId ->
+                scope.launch {
+                    killBgTask(sessionId, procId)
+                    bgRefresh()
+                }
+            },
+            onDismiss = { showBgSheet = false },
         )
     }
 

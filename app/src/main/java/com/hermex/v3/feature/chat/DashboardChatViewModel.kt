@@ -1072,30 +1072,49 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
     }
 
     override fun sendMessageWithImage(text: String, imageBase64: String, filename: String?) {
-        if (sessionId.isEmpty()) return
         if (imageBase64.isBlank()) {
             if (text.isNotBlank()) sendMessage(text)
             return
         }
+        sendImages(listOf(imageBase64), text, filename)
+    }
+
+    /** v0.7.0: multi-image send — stage every image, then submit ONE prompt. */
+    override fun sendMessageWithImages(text: String, imagesB64: List<String>) {
+        val imgs = imagesB64.filter { it.isNotBlank() }
+        if (imgs.isEmpty()) {
+            if (text.isNotBlank()) sendMessage(text)
+            return
+        }
+        sendImages(imgs, text, null)
+    }
+
+    private fun sendImages(imagesB64: List<String>, text: String, filename: String?) {
+        if (sessionId.isEmpty()) return
         viewModelScope.launch {
             try {
-                DebugLog.log("RPC", "DashboardChat", "image.attach_bytes → staging (${imageBase64.length} chars)")
-                val attach = rpcClient.attachImage(sessionId, imageBase64, filename)
-                val attachText = attach["text"]?.jsonPrimitive?.contentOrNull
-                // Image rides along with the next prompt; blank text uses the
+                var lastText: String? = null
+                imagesB64.forEachIndexed { i, b64 ->
+                    DebugLog.log("RPC", "DashboardChat", "image.attach_bytes → staging ${i + 1}/${imagesB64.size} (${b64.length} chars)")
+                    val attach = rpcClient.attachImage(sessionId, b64, filename ?: "photo_${System.currentTimeMillis()}_$i.jpg")
+                    lastText = attach["text"]?.jsonPrimitive?.contentOrNull
+                }
+                // Images ride along with the next prompt; blank text uses the
                 // server's placeholder ("[User attached image: ...]").
-                val finalText = text.ifBlank { attachText ?: "[User attached image]" }
-                DebugLog.log("RPC", "DashboardChat", "image staged — submitting prompt")
+                val finalText = text.ifBlank { lastText ?: "[User attached image]" }
+                DebugLog.log("RPC", "DashboardChat", "images staged — submitting prompt")
                 sendMessage(finalText)
             } catch (e: Exception) {
                 // v0.1.83: 4001 = session reaped — self-heal (resume) and retry ONCE.
                 if (e is JsonRpcException && e.code == 4001 && healReapedSessionForAttach("image.attach")) {
                     DebugLog.log("RPC", "DashboardChat", "image.attach retrying after self-heal")
                     try {
-                        val attach2 = rpcClient.attachImage(sessionId, imageBase64, filename)
-                        val attachText2 = attach2["text"]?.jsonPrimitive?.contentOrNull
-                        val finalText2 = text.ifBlank { attachText2 ?: "[User attached image]" }
-                        sendMessage(finalText2)
+                        var lastText2: String? = null
+                        imagesB64.forEachIndexed { i, b64 ->
+                            val attach2 = rpcClient.attachImage(sessionId, b64, filename ?: "photo_${System.currentTimeMillis()}_$i.jpg")
+                            lastText2 = attach2["text"]?.jsonPrimitive?.contentOrNull
+                        }
+                        sendMessage(text.ifBlank { lastText2 ?: "[User attached image]" })
                         return@launch
                     } catch (retry: Exception) {
                         DebugLog.log("ERROR", "DashboardChat", "image.attach retry failed: ${retry.message}")

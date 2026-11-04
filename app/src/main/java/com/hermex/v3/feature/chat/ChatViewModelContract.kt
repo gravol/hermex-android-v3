@@ -33,6 +33,7 @@ abstract class ChatViewModelContract(application: Application) : AndroidViewMode
     open fun toggleTodosExpanded() {}
     /** Send a message with an attached image (base64, pre-downscaled). */
     open fun sendMessageWithImage(text: String, imageBase64: String, filename: String?) {}
+    open fun sendMessageWithImages(text: String, imagesB64: List<String>) {}
     /** Send a message with an attached file (base64 + mime), uploaded via `file.attach`. */
     open fun sendMessageWithFile(text: String, fileBase64: String, mimeType: String, filename: String?) {}
     /** Report whether the chat screen is currently visible (background-turn tracking). */
