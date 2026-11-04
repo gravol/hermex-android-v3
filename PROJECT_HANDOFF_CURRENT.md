@@ -1,8 +1,8 @@
 # Hermex Android — Project Handoff (Current State)
 
-**Last updated:** 2026-11-04 — current is **v0.8.1** (per-item cards, interleaved thought segments, merged detail sheets)
-**Current version:** v0.8.1 (versionCode 62) — fixes go out as 0.x
-**HEAD commit:** see `git log -1` (v0.8.1: 4ecf628; v0.8.0: 910c478; v0.7.0: 27da3e1; v0.6.0: ca2d56d; v0.5.9: 6463e80 + 56320a3 + a2a4c20 + docs)
+**Last updated:** 2026-11-04 — current is **v0.8.2** (tool detail sheets explain what each tool is)
+**Current version:** v0.8.2 (versionCode 63) — fixes go out as 0.x
+**HEAD commit:** see `git log -1` (v0.8.2: 50ce272; v0.8.1: 4ecf628; v0.8.0: 910c478; v0.7.0: 27da3e1; v0.6.0: ca2d56d; v0.5.9: 6463e80 + 56320a3 + a2a4c20 + docs)
 **Branch:** `master`  
 **Repository:** `git@github.com:gravol/hermex-android-v3.git`  
 **Working directory:** `/home/jeff/HermexAndroidV3` (canonical; `~/HermexAndroid` = frozen v2 fallback)
