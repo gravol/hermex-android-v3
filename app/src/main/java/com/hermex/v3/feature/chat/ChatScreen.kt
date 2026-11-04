@@ -46,6 +46,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.CheckCircle
@@ -882,6 +884,16 @@ fun ChatScreen(
             },
         )
     }
+    // v0.8.3: hoisted above the Scaffold so both the composer metrics strip
+    // (bottomBar) and the floating status pill (content overlay) can read them.
+    val displayTokPerSec = state.liveTokPerSec?.takeIf { it > 0f } ?: streamTokPerSec
+    val isServerReported = state.liveTokPerSec != null && state.liveTokPerSec!! > 0f
+    // Turn start for the status pill timer.
+    var turnStartMs by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(state.isStreaming) {
+        turnStartMs = if (state.isStreaming) System.currentTimeMillis() else null
+    }
+
     Scaffold(
         modifier = Modifier.imePadding(),
         topBar = {
@@ -1301,29 +1313,92 @@ fun ChatScreen(
                             onAnswer = { answer -> viewModel.respondToClarify(answer) },
                         )
                     }
-                    // Composer — WebUI-style: text field on top (full width),
-                    // footer controls (attach, mic, ctx ring, send) below it.
-                    Column(
+                    // Composer — official-app silhouette (v0.8.3): round "+" outside
+                    // the pill on the left, one pill input, round send/stop on the
+                    // right. Our differentiators (context gauge, tok/s, YOLO) live in
+                    // a thin strip inside the pill so the silhouette still matches.
+                    val canSend = (composerText.isNotBlank() || pendingImages.isNotEmpty()) && !isTranscribing
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.Bottom,
                     ) {
-                        // Composer capsule — text field on top, controls below,
-                        // all inside one capsule (WebUI-style).
+                        // "+" — attach menu (outside the pill, like the reference)
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f))
+                                .border(
+                                    BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                                    CircleShape,
+                                )
+                                .clickable(enabled = !isRecording && !isTranscribing) {
+                                    showAttachSheet = true
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = "Attach",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
                         Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(28.dp),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(26.dp),
                             color = Color(0xFF1A1A1A),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
                         ) {
                             Column {
-                                // Text field — full width, grows left-to-right then down
+                                // Thin metrics strip — only when there's something
+                                // to show (streaming tok/s or a known context size).
+                                val showStrip = state.isStreaming ||
+                                    (state.contextMax != null && state.contextMax > 0)
+                                if (showStrip) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 14.dp, end = 10.dp, top = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        ContextRing(
+                                            used = state.contextUsed,
+                                            max = state.contextMax,
+                                            modifier = Modifier.padding(end = 4.dp),
+                                            onClick = { showCtxPanel = true },
+                                        )
+                                        Text(
+                                            text = if (state.contextMax != null && state.contextMax > 0 && state.contextUsed != null)
+                                                "${formatTokens(state.contextUsed)} / ${formatTokens(state.contextMax)}"
+                                            else "",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        )
+                                        if (state.isStreaming && displayTokPerSec > 0.0) {
+                                            Text(
+                                                text = "  ·  %.1f tok/s".format(displayTokPerSec),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.9f),
+                                            )
+                                        }
+                                        Spacer(Modifier.weight(1f))
+                                        YoloButton(
+                                            enabled = state.yoloEnabled,
+                                            onClick = { viewModel.setYolo(!state.yoloEnabled) },
+                                        )
+                                    }
+                                }
                                 OutlinedTextField(
                                     value = composerText,
                                     onValueChange = { composerText = it },
                                     placeholder = {
                                         Text(
-                                            "Message Hermes...",
+                                            // Reference behavior: while a turn runs the
+                                            // pill invites a queued message; send queues it.
+                                            if (state.isStreaming) "Queue a message..." else "Message Hermes...",
                                             fontStyle = FontStyle.Italic,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                         )
@@ -1334,7 +1409,7 @@ fun ChatScreen(
                                         .onFocusChanged { composerFocused = it.isFocused },
                                     maxLines = 4,
                                     enabled = true,
-                                    shape = RoundedCornerShape(28.dp),
+                                    shape = RoundedCornerShape(26.dp),
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = Color.Transparent,
                                         unfocusedBorderColor = Color.Transparent,
@@ -1342,120 +1417,43 @@ fun ChatScreen(
                                         unfocusedContainerColor = Color.Transparent,
                                     ),
                                 )
-                                Spacer(Modifier.height(2.dp))
-                                // Controls row — attach, mic, ctx ring, send
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    // Left controls — attach + mic
-                                    Row {
-                                        // Attach (paperclip — photo picker)
-                                        IconButton(
-                                            onClick = { showAttachSheet = true },
-                                            enabled = !isRecording && !isTranscribing,
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.AttachFile,
-                                                contentDescription = "Attach photo",
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                        // Voice message
-                                        IconButton(
-                                            onClick = {
-                                                if (isRecording) {
-                                                    stopRecording()
-                                                } else {
-                                                    val granted = ContextCompat.checkSelfPermission(
-                                                        context, Manifest.permission.RECORD_AUDIO,
-                                                    ) == PackageManager.PERMISSION_GRANTED
-                                                    if (granted) startRecording()
-                                                    else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                                }
-                                            },
-                                            enabled = !isTranscribing && pendingVoiceB64 == null,
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isRecording) Icons.Filled.Mic else Icons.Outlined.Mic,
-                                                contentDescription = if (isRecording) "Stop recording" else "Voice message",
-                                                tint = if (isRecording) Color(0xFFFF3B30) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.weight(1f))
-                                    // Context token gauge — compact "used / max" readout left of the ring
-                                    Text(
-                                        text = if (state.contextMax != null && state.contextMax > 0 && state.contextUsed != null)
-                                            "${formatTokens(state.contextUsed)} / ${formatTokens(state.contextMax)}"
-                                        else "",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                        modifier = Modifier.padding(end = 2.dp),
-                                    )
-                                    // Context ring (WebUI-style token gauge)
-                                    ContextRing(
-                                        used = state.contextUsed,
-                                        max = state.contextMax,
-                                        modifier = Modifier.padding(horizontal = 4.dp),
-                                        onClick = { showCtxPanel = true },
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    // YOLO mode pill — skip approvals this session (v0.1.4)
-                                    YoloButton(
-                                        enabled = state.yoloEnabled,
-                                        onClick = { viewModel.setYolo(!state.yoloEnabled) },
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    // v0.8.0: queue-this-until-turn-ends (only
-                                    // while a turn is running). The held message
-                                    // shows as a cancellable chip above the input.
-                                    val canSend = (composerText.isNotBlank() || pendingImages.isNotEmpty()) && !isTranscribing
-                                    if (state.isStreaming) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(42.dp)
-                                                .clip(CircleShape)
-                                                .background(
-                                                    if (canSend) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.85f)
-                                                    else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.3f),
-                                                )
-                                                .clickable(enabled = canSend) {
-                                                    viewModel.queueMessage(composerText)
-                                                    composerText = ""
-                                                },
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.Bolt,
-                                                contentDescription = "Queue after this turn",
-                                                tint = MaterialTheme.colorScheme.onTertiary,
-                                            )
-                                        }
-                                        Spacer(Modifier.width(6.dp))
-                                    }
-                                    // Send — accent circle with up arrow (WebUI-style)
-                                    Box(
-                                        modifier = Modifier
-                                            .size(42.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                if (canSend) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-                                                },
-                                            )
-                                            .clickable(enabled = canSend) { sendComposer() },
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            Icons.Filled.ArrowUpward,
-                                            contentDescription = "Send",
-                                            tint = MaterialTheme.colorScheme.onPrimary,
-                                        )
-                                    }
-                                }
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        // Round send / stop. While streaming: stop square when the
+                        // composer is empty, up-arrow (queues) once there's text —
+                        // matches the "Queue a message..." placeholder promise.
+                        val showStop = state.isStreaming && !canSend
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (showStop) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
+                                    else if (canSend) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                                )
+                                .clickable(enabled = showStop || canSend) {
+                                    if (showStop) viewModel.stopStreaming()
+                                    else if (state.isStreaming) {
+                                        viewModel.queueMessage(composerText)
+                                        composerText = ""
+                                    } else sendComposer()
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (showStop) {
+                                Icon(
+                                    Icons.Filled.Stop,
+                                    contentDescription = "Stop",
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Filled.ArrowUpward,
+                                    contentDescription = "Send",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                )
                             }
                         }
                     }
@@ -1463,10 +1461,13 @@ fun ChatScreen(
             }
         },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
+        ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
         ) {
             // Error banner for send failures (wrap_content height)
             if (state.error != null) {
@@ -1538,8 +1539,7 @@ fun ChatScreen(
             // message item's LiveTurnStatusLine). v0.1.110: prefer
             // server-reported liveTokPerSec, fall back to the char-count
             // estimate (streamTokPerSec).
-            val displayTokPerSec = state.liveTokPerSec?.takeIf { it > 0f } ?: streamTokPerSec
-            val isServerReported = state.liveTokPerSec != null && state.liveTokPerSec!! > 0f
+            // (tok/s vals hoisted above the Scaffold — v0.8.3)
             when {
                 state.isLoading && state.messages.isEmpty() -> {
                     Box(
@@ -1629,14 +1629,9 @@ fun ChatScreen(
                             // elapsed) as a compact line at the head of the
                             // streaming item — the docked panel's readout,
                             // inline. Replaces the v0.1.64 bottom panel.
-                            if (msg.isStreaming) {
-                                LiveTurnStatusLine(
-                                    thinking = msg.thinkingText.orEmpty(),
-                                    tokPerSec = displayTokPerSec,
-                                    thinkingTokPerSec = streamThinkingTokPerSec,
-                                    isServerReported = isServerReported,
-                                )
-                            }
+                            // v0.8.3: the inline status line moved to the floating
+                            // top status pill + the composer metrics strip, matching
+                            // the reference layout. Live thinking itself stays inline.
                             // v0.8.1: interleaved timeline — thinking segments
                             // and tool rows render in the order they happened
                             // (segments anchor to the tool that interrupted
@@ -1683,6 +1678,22 @@ fun ChatScreen(
             // v0.8.0: the docked live-activity panel (v0.1.64) is gone —
             // thinking, tool rows, and the tok/s readout now render INLINE in
             // the streaming message item above (see displayTokPerSec above).
+
+        }
+            // v0.8.3: floating status pill (official style) — pulsing dot,
+            // state word, elapsed timer, tok/s. Overlaid, never pushes the list.
+            val ts = turnStartMs
+            if (state.isStreaming && ts != null) {
+                TurnStatusPill(
+                    thinking = state.messages.lastOrNull { it.isStreaming }?.thinkingText.orEmpty(),
+                    tokPerSec = displayTokPerSec,
+                    startMs = ts,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 6.dp),
+                )
+            }
         }
     }
 
@@ -2251,10 +2262,11 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 3.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(16.dp))
             .clickable { expanded = !expanded },
         color = LocalUiSurfaces.current.thinkingBox,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -2262,7 +2274,7 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
                 Text(
                     text = if (streaming) "THINKING" else "THOUGHT",
                     style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.5.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.tertiary,
                 )
                 if (streaming) {
                     Spacer(Modifier.width(8.dp))
@@ -2410,10 +2422,10 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onTap),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
         Row(
@@ -2922,84 +2934,72 @@ private fun formatTokens(tokens: Long): String {
 }
 
 /**
- * v0.8.0: compact live-turn status line rendered at the head of the streaming
- * message item (replaces the docked panel's header readout): pulsing dot,
- * thinking speed + elapsed while reasoning, streaming tok/s on the right.
+ * v0.8.3 floating status pill (official-app style): pulsing dot + state word +
+ * elapsed timer + tok/s, overlaid at the top of the transcript while a turn
+ * runs. Replaces the inline LiveTurnStatusLine (its metrics moved to the
+ * composer strip and here).
  */
 @Composable
-private fun LiveTurnStatusLine(
+private fun TurnStatusPill(
     thinking: String,
     tokPerSec: Float,
-    thinkingTokPerSec: Float,
-    isServerReported: Boolean,
+    startMs: Long,
+    modifier: Modifier = Modifier,
 ) {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
-            kotlinx.coroutines.delay(1000)
             now = System.currentTimeMillis()
+            delay(1000)
         }
     }
-    val thinkingVisible = thinking.isNotBlank()
-    var thinkingStartedAt by remember { mutableStateOf<Long?>(null) }
-    if (thinkingVisible) {
-        if (thinkingStartedAt == null) thinkingStartedAt = System.currentTimeMillis()
-    } else {
-        thinkingStartedAt = null
+    var pulse by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            pulse = !pulse
+            delay(900)
+        }
     }
-    val thinkingElapsedMs = remember(now, thinkingStartedAt) {
-        if (thinkingStartedAt != null) now - thinkingStartedAt!! else 0L
-    }
-    fun formatElapsed(ms: Long): String {
-        val s = ms / 1000
-        val m = s / 60
-        return if (m > 0) "${m}m ${s % 60}s" else "${s}s"
-    }
-    val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "dot",
-    )
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    val secs = ((now - startMs) / 1000).toInt().coerceAtLeast(0)
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0xE6101018),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
     ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = pulse)),
-        )
-        Spacer(Modifier.width(8.dp))
-        if (thinkingTokPerSec > 0f) {
-            Text(
-                text = "thinking ${String.format("%.1f", thinkingTokPerSec)} tok/s",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
-                maxLines = 1,
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(
+                        MaterialTheme.colorScheme.primary.copy(alpha = if (pulse) 1f else 0.35f),
+                    ),
             )
-        }
-        if (thinkingVisible && thinkingElapsedMs > 0) {
-            if (thinkingTokPerSec > 0f) Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(8.dp))
             Text(
-                text = formatElapsed(thinkingElapsedMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                text = if (thinking.isNotBlank()) "Thinking…" else "Writing…",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White,
             )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = "%d:%02d".format(secs / 60, secs % 60),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White.copy(alpha = 0.6f),
+            )
+            if (tokPerSec > 0f) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "%.0f tok/s".format(tokPerSec),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
         }
-        Spacer(Modifier.weight(1f))
-        Text(
-            text = "${if (isServerReported) "" else "≈"}${String.format("%.1f", tokPerSec)} tok/s",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (tokPerSec > 0f) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            },
-        )
     }
 }
 

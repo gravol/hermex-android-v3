@@ -1,4 +1,17 @@
 ## v0.6.0 (vc59) — official-app chat rendering
+## v0.8.3 (vc64)
+- Official-app layout: composer is now round "+" outside the pill on the left,
+  one input pill, round send/stop on the right. While a turn runs the pill
+  invites "Queue a message..." (send queues; empty composer shows a stop button
+  that actually stops the turn).
+- Floating top status pill while streaming: pulsing dot + Thinking…/Writing… +
+  elapsed timer + tok/s. Replaces the inline status line.
+- Our differentiators kept: context ring + used/max + live tok/s + YOLO now sit
+  in a thin strip inside the composer pill (shown when relevant).
+- Cards restyled to the reference: 16dp radius, periwinkle THOUGHT label.
+- Standalone mic/paperclip removed from the bar — the "+" menu already covers
+  camera/photos/files/drawing/voice.
+
 ## v0.8.2 (vc63)
 - Tool detail sheets now explain what the tool IS: one-line description + toolset,
   fetched from the gateway's own registry (tools.show) and cached per app run —
