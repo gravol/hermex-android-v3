@@ -13,12 +13,18 @@ data class UiMessage(
     val isWaitingForFirstEvent: Boolean = false,  // true from send until first SSE event
     val isCommandAck: Boolean = false,  // system-ish acknowledgement line (e.g. /steer) — rendered distinctly
     val thinkingText: String? = null,
+    // v0.8.1: earlier thinking segments of THIS turn, each closed by a tool
+    // call starting — rendered as separate THOUGHT cards interleaved with the
+    // tool rows at the position they were interrupted (official-app layout).
+    val priorThinking: List<ThinkingSeg> = emptyList(),
     val thinkingExpanded: Boolean = true,
     val thinkingHasContent: Boolean = false,  // true once first assistant.delta arrives
     val toolCalls: List<UiToolCall> = emptyList(),
     val usage: UiUsage? = null,
     val timestamp: Long = System.currentTimeMillis(),
 )
+
+data class ThinkingSeg(val beforeToolId: String?, val text: String)
 
 data class UiToolCall(
     val id: String,

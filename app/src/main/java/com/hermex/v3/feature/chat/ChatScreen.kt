@@ -108,6 +108,8 @@ import dev.snipme.highlights.Highlights
 import dev.snipme.highlights.model.BoldHighlight
 import dev.snipme.highlights.model.ColorHighlight
 import dev.snipme.highlights.model.SyntaxLanguage
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -1631,24 +1633,29 @@ fun ChatScreen(
                                     isServerReported = isServerReported,
                                 )
                             }
-                            // v0.8.0: thinking renders INLINE in the transcript,
-                            // live while streaming (expanded THINKING card) and
-                            // collapsed as a THOUGHT card after the turn. The
-                            // docked bottom panel is gone — one scroller, one
-                            // source, content stacks below it like the official app.
+                            // v0.8.1: interleaved timeline — thinking segments
+                            // and tool rows render in the order they happened
+                            // (segments anchor to the tool that interrupted
+                            // them). Rows respect the tool toggle; segments the
+                            // thinking toggle.
+                            if (msg.role == "assistant" &&
+                                (msg.toolCalls.isNotEmpty() || msg.priorThinking.isNotEmpty()) &&
+                                (showToolCalls || showThinking)
+                            ) {
+                                ToolCallList(
+                                    toolCalls = if (showToolCalls) msg.toolCalls else emptyList(),
+                                    segments = if (showThinking) msg.priorThinking else emptyList(),
+                                )
+                            }
+                            // v0.8.0: the CURRENT thinking renders INLINE in the
+                            // transcript (expanded THINKING card while streaming,
+                            // collapsed THOUGHT after). It sits after the
+                            // timeline above because any thinking that PRECEDED
+                            // a tool call was anchored there as a segment.
                             if (msg.role == "assistant" && msg.thinkingText?.isNotBlank() == true &&
                                 showThinking
                             ) {
                                 ThoughtCard(text = msg.thinkingText, streaming = msg.isStreaming)
-                            }
-
-                            // v0.6.0: tool calls render as compact one-line rows
-                            // (icon badge + verb + mono args); tap opens the
-                            // Input/Output/Call ID/Context bottom sheet.
-                            // v0.8.0: live tool calls too — single rows in flow,
-                            // no fixed box, no max-2 cap.
-                            if (msg.role == "assistant" && msg.toolCalls.isNotEmpty() && showToolCalls) {
-                                ToolCallList(toolCalls = msg.toolCalls)
                             }
 
                             // Skip the empty bubble for tool-only assistant rows
@@ -2244,6 +2251,7 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
             .clickable { expanded = !expanded },
         color = LocalUiSurfaces.current.thinkingBox,
         shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2280,23 +2288,36 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                 )
             } else if (streaming) {
-                // Live: full text inline, no height cap, no inner scroll — the
-                // main list follows it (single scroller, single source).
+                // Live (v0.8.1): capped at ~4 lines with its own scroll that
+                // follows the tail — the box never dominates the screen.
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontStyle = FontStyle.Italic,
-                        lineHeight = 17.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
-                )
-            } else {
-                Spacer(Modifier.height(4.dp))
+                val liveScroll = rememberScrollState()
+                LaunchedEffect(text.length) {
+                    if (liveScroll.maxValue > 0) liveScroll.scrollTo(liveScroll.maxValue)
+                }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 220.dp)
+                        .heightIn(max = 96.dp)
+                        .verticalScroll(liveScroll),
+                ) {
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontStyle = FontStyle.Italic,
+                            lineHeight = 17.sp,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                    )
+                }
+            } else {
+                Spacer(Modifier.height(4.dp))
+                // v0.8.1: expanded THOUGHT caps at ~4 lines and scrolls within
+                // itself (was 220dp).
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 96.dp)
                         .verticalScroll(rememberScrollState()),
                 ) {
                     Text(
@@ -2313,13 +2334,31 @@ private fun ThoughtCard(text: String, streaming: Boolean = false) {
     }
 }
 
-/** Stack of one-line tool rows; a tap opens the detail sheet. */
+/**
+ * Interleaved timeline (v0.8.1): thinking segments render at the position they
+ * were interrupted (anchored by tool id; unanchored ones first), each tool row
+ * follows its preceding segment. Rows are cards; a tap opens the detail sheet.
+ */
 @Composable
-private fun ToolCallList(toolCalls: List<UiToolCall>) {
+private fun ToolCallList(
+    toolCalls: List<UiToolCall>,
+    segments: List<ThinkingSeg> = emptyList(),
+) {
     var detail by remember { mutableStateOf<UiToolCall?>(null) }
     val now by remember { mutableStateOf(System.currentTimeMillis()) }
-    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        toolCalls.forEach { tc -> ToolCallRow(tc, now) { detail = tc } }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        segments.filter { it.beforeToolId == null && it.text.isNotBlank() }
+            .forEach { ThoughtCard(text = it.text) }
+        toolCalls.forEach { tc ->
+            segments.filter { it.beforeToolId == tc.id && it.text.isNotBlank() }
+                .forEach { ThoughtCard(text = it.text) }
+            ToolCallRow(tc, now) { detail = tc }
+        }
     }
     detail?.let { tc ->
         ToolDetailSheet(toolCall = tc, onDismiss = { detail = null })
@@ -2327,8 +2366,31 @@ private fun ToolCallList(toolCalls: List<UiToolCall>) {
 }
 
 /**
- * One-line tool row (v0.6.0): status-tinted icon badge + bold verb + truncated
- * monospace args. The whole row is the tap target for the detail sheet.
+ * Pull a human one-liner out of a tool call's args JSON: the most
+ * command-like field first (what the official row shows), else raw text.
+ */
+private fun argsDisplay(args: String?): String? {
+    if (args.isNullOrBlank()) return null
+    return try {
+        val el = kotlinx.serialization.json.Json.parseToJsonElement(args)
+        if (el is kotlinx.serialization.json.JsonObject) {
+            val key = listOf(
+                "command", "code", "cmd", "file_path", "path", "pattern",
+                "query", "url", "goal", "text", "content", "message", "prompt",
+            ).firstOrNull { k -> el[k]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true }
+                ?: el.keys.firstOrNull()
+            key?.let { el[it]?.jsonPrimitive?.contentOrNull }?.takeIf { it.isNotBlank() }
+                ?: args
+        } else args
+    } catch (_: Exception) {
+        args
+    }
+}
+
+/**
+ * One-line tool row (v0.8.1): a clear card per call (fill + hairline border,
+ * official style) with status-tinted icon badge + bold verb + truncated
+ * monospace args. The whole card is the tap target for the detail sheet.
  */
 @Composable
 private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
@@ -2337,73 +2399,83 @@ private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
         running -> MaterialTheme.colorScheme.primary
         else -> Color(0xFF43A047)
     }
-    val argsPreview = toolCall.preview
-        ?: toolCall.summary
-        ?: toolCall.args
-    Row(
+    // v0.8.1: the row shows the INPUT (args), like the official app; output
+    // lives in the detail sheet.
+    val argsPreview = argsDisplay(toolCall.args) ?: toolCall.summary ?: toolCall.preview
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onTap)
-            .padding(horizontal = 14.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 12.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onTap),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
-        Box(
+        Row(
             modifier = Modifier
-                .size(22.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(badgeColor),
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = toolBadgeIcon(toolCall.toolName),
-                contentDescription = null,
-                modifier = Modifier.size(13.dp),
-                tint = Color.White,
-            )
-        }
-        Spacer(Modifier.width(9.dp))
-        Text(
-            text = toolVerb(toolCall.toolName),
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        if (!argsPreview.isNullOrBlank()) {
-            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(badgeColor),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = toolBadgeIcon(toolCall.toolName),
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = Color.White,
+                )
+            }
+            Spacer(Modifier.width(9.dp))
             Text(
-                text = argsPreview.replace('\n', ' '),
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                modifier = Modifier.weight(1f),
+                text = toolVerb(toolCall.toolName),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
             )
-        } else {
-            Spacer(Modifier.weight(1f))
-        }
-        Spacer(Modifier.width(6.dp))
-        if (running) {
-            Text(
-                text = formatElapsed(toolCall.startedAt, now, false),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-            )
+            if (!argsPreview.isNullOrBlank()) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = argsPreview.replace('\n', ' '),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
             Spacer(Modifier.width(6.dp))
-            CircularProgressIndicator(
-                modifier = Modifier.size(12.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        } else {
-            Icon(
-                imageVector = Icons.Default.CheckCircle,
-                contentDescription = "Completed",
-                modifier = Modifier.size(14.dp),
-                tint = Color(0xFF43A047),
-            )
+            if (running) {
+                Text(
+                    text = formatElapsed(toolCall.startedAt, now, false),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                )
+                Spacer(Modifier.width(6.dp))
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "Completed",
+                    modifier = Modifier.size(14.dp),
+                    tint = Color(0xFF43A047),
+                )
+            }
         }
     }
 }
@@ -2432,7 +2504,7 @@ private fun ToolDetailSheet(toolCall: UiToolCall, onDismiss: () -> Unit) {
             if (!toolCall.args.isNullOrBlank()) {
                 SheetSection(label = "Input", value = toolCall.args)
             }
-            val output = toolCall.result ?: toolCall.summary
+            val output = toolCall.result ?: toolCall.summary ?: toolCall.preview
             if (!output.isNullOrBlank()) {
                 SheetSection(label = "Output", value = output)
             }

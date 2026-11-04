@@ -355,14 +355,29 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                             val prev = out.lastOrNull()
                             if (prev != null && prev.role == "assistant") {
                                 val idx = out.size - 1
-                                out[idx] = prev.copy(
-                                    toolCalls = prev.toolCalls + UiToolCall(
+                                // v0.8.1: merge by tool-call id — the assistant
+                                // row already contributed the Input (args); this
+                                // row contributes the Output. One row per call,
+                                // detail sheet shows both like the official app.
+                                val matchIdx = prev.toolCalls.indexOfFirst { tc -> it.id != null && tc.id == it.id }
+                                val merged = if (matchIdx >= 0) {
+                                    prev.toolCalls.toMutableList().also { m ->
+                                        m[matchIdx] = m[matchIdx].copy(
+                                            preview = it.context ?: m[matchIdx].preview,
+                                            result = it.context ?: m[matchIdx].result,
+                                            completed = true,
+                                        )
+                                    }
+                                } else {
+                                    prev.toolCalls + UiToolCall(
                                         id = it.id ?: "tc_${tempIdCounter.incrementAndGet()}",
                                         toolName = it.name ?: "tool",
                                         preview = it.context,
+                                        result = it.context,
                                         completed = true,
                                     )
-                                )
+                                }
+                                out[idx] = prev.copy(toolCalls = merged)
                             }
                             continue
                         }
@@ -2066,6 +2081,10 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 if (n.toolName == "todo") return
                 val idx = ensureStreamingPlaceholder(msgs)
                 val cur = msgs[idx]
+                // v0.8.1: a tool starting closes the current thinking segment —
+                // any further thinking becomes its own THOUGHT box.
+                val thinkingNow = cur.thinkingText.orEmpty()
+                val segClosed = thinkingNow.isNotBlank()
                 val updated = cur.toolCalls.map { tc ->
                     // Match by id, or the FIRST not-yet-started card with this
                     // name (a tool that runs twice must not overwrite the
@@ -2076,7 +2095,12 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                         startedAt = System.currentTimeMillis(),
                     ) else tc
                 }
-                msgs[idx] = cur.copy(toolCalls = updated)
+                val segs = if (segClosed) cur.priorThinking + com.hermex.v3.feature.chat.ThinkingSeg(beforeToolId = n.toolId, text = thinkingNow) else cur.priorThinking
+                msgs[idx] = cur.copy(
+                    toolCalls = updated,
+                    priorThinking = segs,
+                    thinkingText = if (segClosed) null else cur.thinkingText,
+                )
             }
 
             is RpcNotification.ToolComplete -> {
