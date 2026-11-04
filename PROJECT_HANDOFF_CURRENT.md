@@ -1,8 +1,8 @@
 # Hermex Android — Project Handoff (Current State)
 
-**Last updated:** 2026-11-04 — current is **v0.5.9** (subagent visibility: Children sheet, Agents roster, MCP panel)
-**Current version:** v0.5.9 (versionCode 58) — fixes go out as 0.5.x
-**HEAD commit:** see `git log -1` (v0.5.9: Phase A 6463e80 + Phase B 56320a3 + Phase C a2a4c20 + docs)
+**Last updated:** 2026-11-04 — current is **v0.6.0** (official-app chat rendering: tool rows + detail sheet, THOUGHT cards, plain assistant text)
+**Current version:** v0.6.0 (versionCode 59) — fixes go out as 0.x
+**HEAD commit:** see `git log -1` (v0.6.0: ca2d56d; v0.5.9: 6463e80 + 56320a3 + a2a4c20 + docs)
 **Branch:** `master`  
 **Repository:** `git@github.com:gravol/hermex-android-v3.git`  
 **Working directory:** `/home/jeff/HermexAndroidV3` (canonical; `~/HermexAndroid` = frozen v2 fallback)

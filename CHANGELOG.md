@@ -1,3 +1,14 @@
+## v0.6.0 (vc59) — official-app chat rendering
+
+Ported the official client's chat feel (from Jeff's screenshots of it), keeping our tok/s + context meter which it lacks:
+
+- **Tool rows**: one-line strips — status-tinted rounded icon badge (green done / primary running), bold past-tense verb (`toolVerb()`: Ran command, Edited, Searched web…), truncated mono args, check/spinner. Tap → **detail bottom sheet**: monospace tool title, Input / Output / Call ID / Context sections each with its own Copy (history rows lacking args degrade to Call ID + Context — gateway history doesn't carry them).
+- **THOUGHT cards**: collapsed-by-default, small-caps label + chevron, one italic line collapsed, scrollable italic body expanded. Replaces the old always-open ThinkingScrollBox.
+- **Assistant messages are plain text** on the background (no bubble/border); user messages keep the filled bubble.
+- Live activity panel untouched (still owns streaming thinking/tools + tok/s).
+- Dead code removed: ToolCallCard ×2, ToolScrollBox, ThinkingScrollBox (~500 lines).
+- Device-verified on Pixel 8: rows/cards render in history + live, sheet opens, Copy → Copied.
+
 ## v0.5.9 (vc58) — see my delegated children from the phone
 
 Three subagent-visibility surfaces, client-only against live gateway RPCs (no server patch), from diffing the official Nous mobile beta against Hermex. Skills was already covered by the existing Skills & Tools screen.
