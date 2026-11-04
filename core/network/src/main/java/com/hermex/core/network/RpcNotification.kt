@@ -322,6 +322,30 @@ sealed class RpcNotification {
         override val sessionId: String? = null,
     ) : RpcNotification()
 
+    // ── Subagent lifecycle (parent-session events, v0.5.9) ──
+    //
+    // Emitted on the PARENT session's sid by tool_progress._progress_subagent
+    // (`_emit(event_type, sid, payload)`). `subagent.text` is deliberately NOT sent
+    // to the parent (hundreds of ignored frames) — child token streams reach a
+    // client only via the child's own watch session. Payload fields per
+    // _SUBAGENT_FIELDS in tool_progress.py.
+
+    /** One `subagent.start|thinking|tool|complete` frame, normalized. */
+    data class SubagentUpdate(
+        val kind: String,               // "start" | "thinking" | "tool" | "complete"
+        val subagentId: String,
+        val childSessionId: String? = null,
+        val goal: String? = null,
+        val model: String? = null,
+        val toolName: String? = null,
+        val toolPreview: String? = null,
+        val text: String? = null,
+        val status: String? = null,
+        val summary: String? = null,
+        val toolCount: Int? = null,
+        override val sessionId: String? = null,
+    ) : RpcNotification()
+
     // ── Fallback for unrecognized events ──
 
     data class Unknown(

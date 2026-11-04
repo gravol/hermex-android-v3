@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -617,6 +618,27 @@ class JsonRpcClient(
                 if (eventType == "cron.changed") RpcNotification.CronChanged(sessionId = sessionId)
                 else RpcNotification.PlatformsChanged(sessionId = sessionId)
 
+            "subagent.start", "subagent.thinking", "subagent.tool", "subagent.complete" -> {
+                // tool_progress._progress_subagent payload; every field except the event
+                // identity is optional per _SUBAGENT_FIELDS, so a payload-less frame still
+                // parses (kind + empty row) rather than falling to Unknown.
+                val p = params["payload"]?.jsonObject
+                RpcNotification.SubagentUpdate(
+                    kind = eventType.removePrefix("subagent."),
+                    subagentId = p?.get("subagent_id")?.jsonPrimitive?.contentOrNull ?: "",
+                    childSessionId = p?.get("child_session_id")?.jsonPrimitive?.contentOrNull,
+                    goal = p?.get("goal")?.jsonPrimitive?.contentOrNull,
+                    model = p?.get("model")?.jsonPrimitive?.contentOrNull,
+                    toolName = p?.get("tool_name")?.jsonPrimitive?.contentOrNull,
+                    toolPreview = p?.get("tool_preview")?.jsonPrimitive?.contentOrNull,
+                    text = p?.get("text")?.jsonPrimitive?.contentOrNull,
+                    status = p?.get("status")?.jsonPrimitive?.contentOrNull,
+                    summary = p?.get("summary")?.jsonPrimitive?.contentOrNull,
+                    toolCount = p?.get("tool_count")?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+                    sessionId = sessionId,
+                )
+            }
+
             else -> unknownFallback(eventType, params, sessionId)
         }
 
@@ -954,6 +976,57 @@ class JsonRpcClient(
     /** Steer the next tool call of the live turn (non-interrupting). */
     suspend fun sessionSteer(sessionId: String, text: String): JsonObject =
         request("session.steer", mapOf("session_id" to sessionId, "text" to text))
+
+    // ── Subagents / delegation (v0.5.9) ───────────────────────────
+    //
+    // Wire contracts verified against tui_gateway/contracts/billing_delegation_pets.py
+    // and methods_subagents.py (2026-11-03):
+    //  * delegation.status is PROFILE-scoped (no session_id) — the global roster.
+    //  * subagent.list/tail/steer/interrupt are session-authority RPCs: the gateway
+    //    resolves `_sessions.get(session_id)` and requires the CALLING transport to be
+    //    attached — live sid only, never the DB key. Callers must resume first
+    //    (sessionResume returns the live sid) and send THAT.
+    //  * subagent.steer returns {status: queued|rejected, ...} — queued is not delivered.
+
+    /** Global roster of live delegated children + the spawn-pause flag. */
+    suspend fun delegationStatus(): JsonObject = request("delegation.status")
+
+    /** Block/unblock NEW spawns globally (active children keep running). */
+    suspend fun delegationPause(paused: Boolean): JsonObject =
+        request("delegation.pause", mapOf("paused" to paused))
+
+    /** Live children of one session (live sid) + recently failed delegation rows. */
+    suspend fun subagentList(sessionId: String): JsonObject =
+        request("subagent.list", mapOf("session_id" to sessionId))
+
+    /** Tail of a child's live transcript file (may be unavailable/truncated). */
+    suspend fun subagentTail(sessionId: String, subagentId: String): JsonObject =
+        request("subagent.tail", mapOf("session_id" to sessionId, "subagent_id" to subagentId))
+
+    /** Queue steering text into a live child. */
+    suspend fun subagentSteer(sessionId: String, subagentId: String, text: String): JsonObject =
+        request(
+            "subagent.steer",
+            mapOf("session_id" to sessionId, "subagent_id" to subagentId, "text" to text),
+        )
+
+    /** Hard-interrupt one child. */
+    suspend fun subagentInterrupt(sessionId: String, subagentId: String): JsonObject =
+        request("subagent.interrupt", mapOf("session_id" to sessionId, "subagent_id" to subagentId))
+
+    // ── MCP servers (v0.5.9) ──────────────────────────────────────
+    // mcp.servers.list/status are profile-scoped (omit profile → active profile).
+    // mcp.servers.test probes one server (connect + list tools) — give it room.
+
+    /** Configured MCP servers: {servers:[{name, transport, url, command, enabled, source, …}]}. */
+    suspend fun mcpServersList(): JsonObject = request("mcp.servers.list")
+
+    /** Cached runtime state (never connects): {servers:[{name, tools, connected, status}], checked_at}. */
+    suspend fun mcpServersStatus(): JsonObject = request("mcp.servers.status")
+
+    /** Probe one server now: {ok, tools:[{name, description}], error, oauth_needed}. */
+    suspend fun mcpServersTest(name: String): JsonObject =
+        request("mcp.servers.test", mapOf("name" to name), timeoutMs = 45_000)
 
     // ── Bot Screen (v0.22.0 display.* methods) ────────────────────
 

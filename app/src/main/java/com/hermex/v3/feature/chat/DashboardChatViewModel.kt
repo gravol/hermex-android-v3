@@ -1892,7 +1892,13 @@ class DashboardChatViewModel(application: Application) : ChatViewModelContract(a
                 }
             }
 
+            // v0.5.9: subagent lifecycle frames belong to the Children sheet
+            // (ChildrenSheetState collects them from the shared notification flow);
+            // the chat stream itself takes no action on them.
+            is RpcNotification.SubagentUpdate -> Unit
+
             is RpcNotification.RunStarted -> {
+
                 // No UI change needed — streaming placeholder already visible
             }
 
