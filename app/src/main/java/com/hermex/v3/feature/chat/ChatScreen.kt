@@ -71,6 +71,12 @@ import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Hub
 import com.mikepenz.markdown.compose.components.MarkdownComponentModel
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
@@ -1453,15 +1459,14 @@ fun ChatScreen(
                             if (msg.role == "assistant" && msg.thinkingText?.isNotBlank() == true &&
                                 !msg.isStreaming && showThinking
                             ) {
-                                ThinkingScrollBox(text = msg.thinkingText)
+                                ThoughtCard(text = msg.thinkingText)
                             }
 
-                            // Tool calls render ABOVE the response in one
-                            // scrollable box (v0.1.68); tap a row for the full
-                            // card (args/diff). Hidden when the tool-call toggle
-                            // is off (v0.1.96).
+                            // v0.6.0: tool calls render as compact one-line rows
+                            // (icon badge + verb + mono args); tap opens the
+                            // Input/Output/Call ID/Context bottom sheet.
                             if (msg.role == "assistant" && msg.toolCalls.isNotEmpty() && !msg.isStreaming && showToolCalls) {
-                                ToolScrollBox(toolCalls = msg.toolCalls)
+                                ToolCallList(toolCalls = msg.toolCalls)
                             }
 
                             // Skip the empty bubble for tool-only assistant rows
@@ -1726,92 +1731,6 @@ fun ChatScreen(
 // Shown above the assistant bubble while the model is thinking
 // and no real content has arrived yet. Dimmed, italic, live-updating.
 
-/**
- * Scrollable thinking box shown above the final answer once the turn is done
- * (v0.1.66). During streaming the live docked panel owns thinking instead.
- */
-@Composable
-private fun ThinkingScrollBox(text: String) {
-    // v0.1.120: track when the thinking box first appeared so we can show how
-    // long the model spent reasoning, displayed at the bottom of the box.
-    var startedAt by remember { mutableStateOf<Long?>(null) }
-    if (startedAt == null) startedAt = System.currentTimeMillis()
-    // v0.1.121: a one-shot ticker that flips `now` once per second while the box
-    // is visible, so the elapsed readout actually advances instead of freezing
-    // at 0s. Without this the remember{} snapshot captured "now" once and never
-    // updated — hence "Thought for 0s".
-    var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay(1000)
-            now = System.currentTimeMillis()
-        }
-    }
-    val elapsedMs = now - (startedAt ?: now)
-    fun formatElapsed(ms: Long): String {
-        val s = ms / 1000
-        val m = s / 60
-        val sec = s % 60
-        return if (m > 0) "${m}m ${sec}s" else "${sec}s"
-    }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        // v0.1.95: thinking box is a themeable extra surface
-        color = LocalUiSurfaces.current.thinkingBox,
-        shape = RoundedCornerShape(10.dp),
-    ) {
-        Column {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "THINKING",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 180.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(10.dp),
-            ) {
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                )
-            }
-            // v0.1.120: elapsed reasoning time at the bottom of the box.
-            Spacer(Modifier.height(4.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Thought for ${formatElapsed(elapsedMs)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                )
-            }
-        }
-    }
-}
-
 @Composable
 private fun LiveThinkingTicker(text: String) {
     Row(
@@ -1866,28 +1785,15 @@ private fun MessageBubble(
 ) {
     val isUser = message.role == "user"
     val alignment = if (isUser) Alignment.End else Alignment.Start
-    val bubbleColor = if (isUser) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
-    }
-    // Telegram-style corner radii: user = top-left/bottom-left/bottom-right rounded,
-    // top-right sharp; assistant = top-right/bottom-right/bottom-left rounded, top-left sharp
-    val bubbleShape = if (isUser) {
-        RoundedCornerShape(
-            topStart = 18.dp,
-            topEnd = 4.dp,
-            bottomStart = 18.dp,
-            bottomEnd = 18.dp,
-        )
-    } else {
-        RoundedCornerShape(
-            topStart = 4.dp,
-            topEnd = 18.dp,
-            bottomStart = 18.dp,
-            bottomEnd = 18.dp,
-        )
-    }
+    // v0.6.0: assistant messages render as PLAIN text on the background
+    // (official-app style) — only user messages keep filled bubbles.
+    val bubbleColor = MaterialTheme.colorScheme.primaryContainer
+    val bubbleShape = RoundedCornerShape(
+        topStart = 18.dp,
+        topEnd = 4.dp,
+        bottomStart = 18.dp,
+        bottomEnd = 18.dp,
+    )
 
     Column(
         modifier = Modifier
@@ -1923,16 +1829,25 @@ private fun MessageBubble(
         Box {
             Column(
                 modifier = bubbleWidthModifier
-                    .clip(bubbleShape)
-                    .background(bubbleColor)
-                    // Border in the context-gauge color (primary) — subtle outline
-                    // around each message (v0.1.67).
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
-                        shape = bubbleShape,
-                    )
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .then(
+                        if (isUser) {
+                            Modifier
+                                .clip(bubbleShape)
+                                .background(bubbleColor)
+                                // Border in the context-gauge color (primary) —
+                                // subtle outline around user bubbles (v0.1.67).
+                                .border(
+                                    width = 1.dp,
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
+                                    shape = bubbleShape,
+                                )
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        } else {
+                            // v0.6.0: assistant text sits directly on the chat
+                            // background — no surface, no border.
+                            Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
+                        }
+                    ),
             ) {
             // Thinking no longer renders in the message (v0.1.65): it streams
             // in the docked Live Activity panel while working — showing it here
@@ -2091,148 +2006,317 @@ private fun MessageBubble(
     }
 }
 
-// ── TOOL CALL CARD ──
+
+// ── POST-TURN EVENT RENDERERS (v0.6.0, official-app style) ──
+// Thinking and tool calls render as compact, standalone strips in the message
+// flow — a collapsible THOUGHT card and one-line tool rows that open a detail
+// bottom sheet. The old boxed "TOOLS · n" container is gone: the row itself is
+// the affordance, matching the official client's density.
+
+/** Past-tense verb per tool, shown bold in the row (official "Ran command"). */
+internal fun toolVerb(toolName: String): String = when (toolName) {
+    "terminal" -> "Ran command"
+    "execute_code" -> "Ran code"
+    "read_file" -> "Read"
+    "write_file" -> "Wrote"
+    "patch", "edit_file" -> "Edited"
+    "search_files" -> "Searched"
+    "web_search" -> "Searched web"
+    "web_extract" -> "Fetched"
+    "browser_exec" -> "Drove browser"
+    "delegate_task" -> "Delegated"
+    "vision_analyze" -> "Analyzed image"
+    "session_search" -> "Searched sessions"
+    "memory" -> "Memory"
+    "skill_view", "skill_manage" -> "Skill"
+    "text_to_speech" -> "Spoke"
+    "cronjob_manage" -> "Cron"
+    else -> "Ran $toolName"
+}
 
 @Composable
-private fun ToolCallCard(toolCall: UiToolCall) {
-    var expanded by remember { mutableStateOf(false) }
-    val now by remember { mutableStateOf(System.currentTimeMillis()) }
+private fun toolBadgeIcon(toolName: String): androidx.compose.ui.graphics.vector.ImageVector =
+    when (toolName) {
+        "terminal", "execute_code" -> Icons.Outlined.Terminal
+        "read_file" -> Icons.Outlined.Description
+        "write_file", "patch", "edit_file" -> Icons.Outlined.Edit
+        "search_files", "session_search" -> Icons.Outlined.Search
+        "web_search", "web_extract", "browser_exec" -> Icons.Outlined.Language
+        "delegate_task" -> Icons.Outlined.Hub
+        "vision_analyze" -> Icons.Outlined.PhotoCamera
+        "memory" -> Icons.Outlined.Psychology
+        else -> Icons.Outlined.Handyman
+    }
 
+/**
+ * Collapsed-by-default THOUGHT card (v0.6.0): small-caps label + chevron;
+ * collapsed shows one italic line + ellipsis, expanded scrolls the full text.
+ */
+@Composable
+private fun ThoughtCard(text: String) {
+    var expanded by remember { mutableStateOf(false) }
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        // v0.1.95: tool cards are a themeable extra surface
-        color = LocalUiSurfaces.current.toolCard,
-        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 3.dp)
+            .clickable { expanded = !expanded },
+        color = LocalUiSurfaces.current.thinkingBox,
+        shape = RoundedCornerShape(12.dp),
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            // ── Header row: icon + name + elapsed + expand arrow ──
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.clickable { expanded = !expanded },
-            ) {
-                // Tool icon
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = toolIcon(toolCall.toolName),
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                Spacer(Modifier.width(6.dp))
-                // Tool name
-                Text(
-                    text = toolCall.toolName,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.tertiary,
-                )
-                Spacer(Modifier.width(8.dp))
-                // Elapsed time
-                Text(
-                    text = formatElapsed(toolCall.startedAt, now, toolCall.completed),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    text = "THOUGHT",
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.5.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.weight(1f))
-                // Status + expand arrow
-                Text(
-                    text = if (toolCall.completed) "✓" else "◌",
-                    color = if (toolCall.completed) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = if (expanded) "▲" else "▼",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse thinking" else "Expand thinking",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
                 )
             }
-
-            // ── Preview (always visible, one line) ──
-            val previewText = toolCall.preview
-                ?: toolCall.summary
-                ?: toolCall.args?.take(100)
-            if (!previewText.isNullOrBlank()) {
-                Spacer(Modifier.height(4.dp))
+            if (!expanded) {
                 Text(
-                    text = previewText,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontStyle = FontStyle.Italic,
+                        lineHeight = 17.sp,
+                    ),
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                 )
-            }
-
-            // ── Expandable detail section ──
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandVertically(),
-                exit = shrinkVertically(),
-            ) {
-                Column {
-                    // Args section
-                    if (!toolCall.args.isNullOrBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = "Arguments",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Surface(
-                            // v0.1.95: args box inside a tool card
-                            color = LocalUiSurfaces.current.toolCard,
-                            shape = RoundedCornerShape(4.dp),
-                        ) {
-                            Text(
-                                text = toolCall.args,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(6.dp),
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            )
-                        }
-                    }
-
-                    // Result section (completed only)
-                    if (toolCall.completed && !toolCall.result.isNullOrBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = "Result",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Surface(
-                            // v0.1.95: result box inside a tool card
-                            color = LocalUiSurfaces.current.toolCard,
-                            shape = RoundedCornerShape(4.dp),
-                        ) {
-                            Text(
-                                text = toolCall.result.take(500),
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(6.dp),
-                                maxLines = 10,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            )
-                        }
-                    }
-
-                    // Diff section (file edits — server inline_diff, desktop-style)
-                    if (!toolCall.inlineDiff.isNullOrBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = "Diff",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        DiffView(toolCall.inlineDiff)
-                    }
+            } else {
+                Spacer(Modifier.height(4.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 220.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontStyle = FontStyle.Italic,
+                            lineHeight = 18.sp,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                    )
                 }
             }
         }
     }
+}
+
+/** Stack of one-line tool rows; a tap opens the detail sheet. */
+@Composable
+private fun ToolCallList(toolCalls: List<UiToolCall>) {
+    var detail by remember { mutableStateOf<UiToolCall?>(null) }
+    val now by remember { mutableStateOf(System.currentTimeMillis()) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        toolCalls.forEach { tc -> ToolCallRow(tc, now) { detail = tc } }
+    }
+    detail?.let { tc ->
+        ToolDetailSheet(toolCall = tc, onDismiss = { detail = null })
+    }
+}
+
+/**
+ * One-line tool row (v0.6.0): status-tinted icon badge + bold verb + truncated
+ * monospace args. The whole row is the tap target for the detail sheet.
+ */
+@Composable
+private fun ToolCallRow(toolCall: UiToolCall, now: Long, onTap: () -> Unit) {
+    val running = !toolCall.completed
+    val badgeColor = when {
+        running -> MaterialTheme.colorScheme.primary
+        else -> Color(0xFF43A047)
+    }
+    val argsPreview = toolCall.preview
+        ?: toolCall.summary
+        ?: toolCall.args
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onTap)
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(badgeColor),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = toolBadgeIcon(toolCall.toolName),
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                tint = Color.White,
+            )
+        }
+        Spacer(Modifier.width(9.dp))
+        Text(
+            text = toolVerb(toolCall.toolName),
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        if (!argsPreview.isNullOrBlank()) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = argsPreview.replace('\n', ' '),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+        Spacer(Modifier.width(6.dp))
+        if (running) {
+            Text(
+                text = formatElapsed(toolCall.startedAt, now, false),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            )
+            Spacer(Modifier.width(6.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = "Completed",
+                modifier = Modifier.size(14.dp),
+                tint = Color(0xFF43A047),
+            )
+        }
+    }
+}
+
+/**
+ * Tool detail bottom sheet (v0.6.0): Input / Output / Call ID / Context
+ * sections, each with its own Copy action — the official client's drill-down.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ToolDetailSheet(toolCall: UiToolCall, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 28.dp),
+        ) {
+            Text(
+                text = toolCall.toolName,
+                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            if (!toolCall.args.isNullOrBlank()) {
+                SheetSection(label = "Input", value = toolCall.args)
+            }
+            val output = toolCall.result ?: toolCall.summary
+            if (!output.isNullOrBlank()) {
+                SheetSection(label = "Output", value = output)
+            }
+            SheetSection(label = "Call ID", value = toolCall.id)
+            if (toolCall.startedAt != null) {
+                SheetSection(
+                    label = "Context",
+                    value = "Started ${formatTimestamp(toolCall.startedAt)}",
+                    mono = false,
+                )
+            }
+            if (!toolCall.inlineDiff.isNullOrBlank()) {
+                Text(
+                    text = "Diff",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                DiffView(toolCall.inlineDiff)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetSection(label: String, value: String, mono: Boolean = true) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable {
+                    clipboard.setText(AnnotatedString(value))
+                    copied = true
+                }
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Default.ContentCopy,
+                contentDescription = "Copy $label",
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = if (copied) "Copied" else "Copy",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    Surface(
+        color = LocalUiSurfaces.current.codeBlock,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .heightIn(max = 200.dp)
+                .padding(10.dp),
+        ) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                ),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+            )
+        }
+    }
+    Spacer(Modifier.height(12.dp))
 }
 
 /**
@@ -2775,281 +2859,7 @@ private fun ToolActivityRow(toolCall: UiToolCall, now: Long) {
     }
 }
 
-/**
- * Scrollable tool-call box shown above the finished answer (v0.1.68).
- * Compact rows; tap a row for the full card (args/diff/preview).
- */
-@Composable
-private fun ToolScrollBox(toolCalls: List<UiToolCall>) {
-    // v0.1.120: each tool gets its own collapsible box — collapsed shows just the
-    // one-line row (icon · name · elapsed · status), tap to expand for full
-    // args/diff/result. A "show all" toggle at the bottom expands/collapses them
-    // together so a long turn doesn't blow past the fold.
-    val now by remember { mutableStateOf(System.currentTimeMillis()) }
-    var detail by remember { mutableStateOf<UiToolCall?>(null) }
-    var expandAll by remember { mutableStateOf(false) }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        // v0.1.95: tools box is a themeable extra surface
-        color = LocalUiSurfaces.current.toolCard,
-        shape = RoundedCornerShape(10.dp),
-    ) {
-        Column {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "TOOLS · ${toolCalls.size}",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-            Column {
-                toolCalls.forEachIndexed { index, tc ->
-                    ToolCallCard(
-                        toolCall = tc,
-                        now = now,
-                        expanded = expandAll,
-                        onToggleDetail = { detail = tc },
-                    )
-                    // Divider between cards (not after the last one).
-                    if (index < toolCalls.size - 1) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        )
-                    }
-                }
-            }
-            // v0.1.120: expand/collapse-all toggle at the bottom.
-            if (toolCalls.size > 1) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                        .clickable { expandAll = !expandAll },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = if (expandAll) "Hide all" else "Show all",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (expandAll) "▲" else "▼",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                }
-            }
-        }
-    }
 
-    detail?.let { tc ->
-        AlertDialog(
-            onDismissRequest = { detail = null },
-            title = { Text(tc.toolName) },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .verticalScroll(rememberScrollState())
-                        .heightIn(max = 420.dp),
-                ) {
-                    if (tc.preview != null) {
-                        Text(
-                            text = "CALL",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(tc.preview, style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    if (tc.args != null) {
-                        Text(
-                            text = "ARGS",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = tc.args,
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            fontSize = 11.sp,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    if (tc.inlineDiff != null) {
-                        DiffView(diffText = tc.inlineDiff)
-                    } else if (tc.summary != null) {
-                        Text(
-                            text = "RESULT",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(tc.summary, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { detail = null }) { Text("Close") }
-            },
-        )
-    }
-}
-
-/**
- * One collapsible tool card (v0.1.120): a one-line header row that taps to
- * expand/collapse. Expanded view reveals full Arguments / inline diff / Result,
- * matching the old ToolCallCard detail layout. [expanded] is an external toggle
- * so "show all" can open every card at once; individual taps still flip this one.
- */
-@Composable
-private fun ToolCallCard(
-    toolCall: UiToolCall,
-    now: Long,
-    expanded: Boolean = false,
-    onToggleDetail: () -> Unit,
-) {
-    var localExpanded by remember { mutableStateOf(false) }
-    val isOpen = expanded || localExpanded
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable {
-                if (!isOpen) onToggleDetail() else localExpanded = !localExpanded
-            },
-    ) {
-        // Collapsed: one-line header row (icon · name · elapsed · status).
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = toolIcon(toolCall.toolName),
-                style = MaterialTheme.typography.labelMedium,
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = toolCall.toolName,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = formatElapsed(toolCall.startedAt, now, toolCall.completed),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-            )
-            Spacer(Modifier.width(6.dp))
-            if (toolCall.completed) {
-                Text(
-                    text = "✓",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color(0xFF4CAF50),
-                )
-            } else {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = if (isOpen) "▲" else "▼",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-            )
-        }
-
-        // Expanded: full detail section (args / diff / result).
-        AnimatedVisibility(visible = isOpen) {
-            Column {
-                if (!toolCall.args.isNullOrBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "Arguments",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Surface(
-                        color = LocalUiSurfaces.current.toolCard,
-                        shape = RoundedCornerShape(4.dp),
-                    ) {
-                        Text(
-                            text = toolCall.args,
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(6.dp),
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        )
-                    }
-                }
-
-                if (toolCall.preview?.isNotBlank() == true && toolCall.args.isNullOrBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "Call",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = toolCall.preview!!,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-
-                if (toolCall.inlineDiff != null) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "Diff",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    DiffView(diffText = toolCall.inlineDiff!!)
-                } else if (toolCall.completed && !toolCall.result.isNullOrBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "Result",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Surface(
-                        color = LocalUiSurfaces.current.toolCard,
-                        shape = RoundedCornerShape(4.dp),
-                    ) {
-                        Text(
-                            text = toolCall.result!!.take(500),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(6.dp),
-                            maxLines = 10,
-                            overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(6.dp))
-            }
-        }
-    }
-}
 
 /**
  * Downscale an image URI to a Bitmap (<=1600px). Returns null on failure. Runs on
