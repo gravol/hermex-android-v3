@@ -1,11 +1,21 @@
 # Hermex Android — Project Handoff (Current State)
 
-**Last updated:** 2026-11-01 — current is **v0.5.2** (debug ring no longer self-annihilates)
-**Current version:** v0.5.2 (versionCode 51) — fixes go out as 0.5.x
-**HEAD commit:** see `git log -1` (v0.5.2: debug-ring fixes ad387a1 + bump 31b7d67 + CHANGELOG restore)
+**Last updated:** 2026-11-04 — current is **v0.5.9** (subagent visibility: Children sheet, Agents roster, MCP panel)
+**Current version:** v0.5.9 (versionCode 58) — fixes go out as 0.5.x
+**HEAD commit:** see `git log -1` (v0.5.9: Phase A 6463e80 + Phase B 56320a3 + Phase C a2a4c20 + docs)
 **Branch:** `master`  
 **Repository:** `git@github.com:gravol/hermex-android-v3.git`  
 **Working directory:** `/home/jeff/HermexAndroidV3` (canonical; `~/HermexAndroid` = frozen v2 fallback)
+
+## v0.5.9 (vc58, 2026-11-04) — see my delegated children from the phone
+
+Three surfaces answering "what are my agents doing" without a laptop, built client-only against live gateway RPCs (no server patch). Feature list came from diffing the official Nous mobile beta against Hermex; Skills was already covered by the existing Skills & Tools screen, so it stayed.
+
+- **Children sheet (chat top bar, AccountTree icon):** live delegated children of the open session. Authority model matters: `subagent.list/tail/steer/interrupt` resolve `_sessions.get(sid)` and require the CALLING transport attached — **live sid only, never the DB key** — so the sheet does `session.resume(omit_messages=true)` on the shared app-wide socket first, then sends the live sid. Roster = 3 s poll + debounced refresh on `subagent.start|thinking|tool|complete` frames (parsed into `RpcNotification.SubagentUpdate`; `subagent.text` deliberately never reaches the parent). Transcript tail via `subagent.tail` (16 KiB server cap, truncated flag surfaced). Steer surfaces the contract's honest `queued` (queued ≠ delivered — lands at the child's next tool boundary). Failed delegations section reads from the durable store, so a dead child stays visible after the live roster forgets it. **Watch** opens the child's own session (the gateway mirrors a live child's stream into any resumed watch session — `agent_callbacks._mirror_subagent_to_child`); `child_session_id` rides only on `subagent.start` frames, so Watch appears only for children started while the sheet was open.
+- **Agents screen (chat rail):** global `delegation.status` roster, 5 s poll — every live child across all sessions with model/tools/elapsed/depth + parent session key, plus the global spawn-pause chip (`delegation.pause`; active children keep running).
+- **MCP screen (chat rail):** `mcp.servers.list` merged with cached `mcp.servers.status` by name (status chip, tool count, config vs plugin source), per-server live Test probe (`mcp.servers.test`, 45 s timeout) with tool dialog. Read/observe/probe only — add/edit stays WebUI/CLI.
+- **Device-verified on Pixel 8 against live gateway v0.22.0:** sheet listed a real running child (`running · qwen3.8-flash-next-iq3_s`), tail loaded, steer round-tripped ("Steer queued" + server-side queue confirmed), failed test-delegation surfaced in the failures section; Agents showed 2 live children + working pause chip; MCP listed all 4 configured servers and the neo4j-memory probe returned 10 live tools where the cached row claimed 14 (cache-vs-live drift is exactly what the Test button is for).
+- **Not in this release:** sessions-screen drawer has no Agents/MCP entries (chat rail only); Watch for pre-existing children needs the gateway to carry `child_session_id` in the list snapshot (server-side today).
 
 ---
 

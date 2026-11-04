@@ -1,3 +1,12 @@
+## v0.5.9 (vc58) — see my delegated children from the phone
+
+Three subagent-visibility surfaces, client-only against live gateway RPCs (no server patch), from diffing the official Nous mobile beta against Hermex. Skills was already covered by the existing Skills & Tools screen.
+
+- **Children sheet** (chat top bar): live children of the open session — resume for the live sid (subagent.* RPCs demand the live sid on the attached transport, never the DB key), roster via 3 s poll + debounced `subagent.*` frames, transcript tail, steer (honest `queued` semantics), interrupt, and a failed-delegations section that survives the live roster forgetting. Watch opens the child's mirror session when its `subagent.start` frame was seen.
+- **Agents screen** (chat rail): global `delegation.status` roster across all sessions (model/tools/elapsed/depth + parent), 5 s poll, global spawn-pause chip.
+- **MCP screen** (chat rail): configured servers merged with cached runtime status, per-server live Test probe with tool dialog. Read/observe/probe only.
+- Device-verified on Pixel 8 against gateway v0.22.0: real child listed live, steer round-tripped end-to-end, failed delegation surfaced, pause chip toggled, neo4j-memory probe returned 10 live tools vs 14 claimed by the cache row.
+
 ## v0.5.3 (vc52) — preserve the provider when picking a model
 
 - Fixed cloud picks inheriting the local engine route. The picker used to retain only the model ID, dropping the selected provider; Terra could display in the chip while requests went to Clerk's stopped endpoint.
